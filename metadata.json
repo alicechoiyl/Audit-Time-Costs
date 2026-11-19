@@ -1,0 +1,6 @@
+{
+  "name": "Meridian Audit — Time-Cost Budgeting & Fee Approval",
+  "description": "Role-based audit time-cost budgeting, MIA RPG 7 progressive fee benchmarking, and 2-level approval workflow application.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
