@@ -9,8 +9,9 @@ import {
   FileText,
   Lock,
 } from 'lucide-react';
-import type { AuditEngagement, AuditSection, QuotationType, StaffMember } from '../types/audit';
+import type { AuditEngagement, AuditSection, EngagementDocument, QuotationType, StaffMember } from '../types/audit';
 import { getStoredDepartmentRoster, INDUSTRY_OPTIONS } from '../data/roster';
+import { extractFinancialsFromEngagementDocs, ExtractedFinancials } from '../utils/aiFinancialExtractor';
 import {
   calculateAllowedHours,
   calculateRecommendedDays,
@@ -84,17 +85,168 @@ export const EngagementWorkspace: React.FC<EngagementWorkspaceProps> = ({
 
   const [showLetterModal, setShowLetterModal] = useState(false);
 
-  const currentRoster = getStoredDepartmentRoster();
-  // Eligible staff for PIC dropdown
-  const eligiblePics = currentRoster.filter(
-    (s: StaffMember) => s.role === 'AUDIT_PIC' || s.role === 'SUPERVISOR' || s.role === 'AUDIT_MANAGER' || s.role === 'AUDIT_PARTNER'
+  const [uploadError, setUploadError] = useState('');
+  const [uploadSuccess, setUploadSuccess] = useState('');
+  const [extractingDocId, setExtractingDocId] = useState<string | null>(null);
+  const [isExtractingAll, setIsExtractingAll] = useState(false);
+  const [extractedPreview, setExtractedPreview] = useState<ExtractedFinancials | null>(null);
+
+  const canUploadDocs = isEditable || currentUser.role === 'AUDIT_MANAGER' || currentUser.role === 'AUDIT_PARTNER' || currentUser.role === 'SYSTEM_ADMIN';
+
+  const formatFileSize = (bytes: number) => {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  };
+
+  const handleCategoryFileUpload = async (e: React.ChangeEvent<HTMLInputElement>, cat: EngagementDocument['category']) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+    setUploadError('');
+    setUploadSuccess('');
+    
+    const newDocs: EngagementDocument[] = [];
+    let sizeWarning = false;
+
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      if (file.size > 3 * 1024 * 1024) {
+        sizeWarning = true;
+      }
+
+      try {
+        const dataUrl = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result as string);
+          reader.onerror = reject;
+          reader.readAsDataURL(file);
+        });
+
+        newDocs.push({
+          id: `doc-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          file_name: file.name,
+          category: cat,
+          mime_type: file.type || 'application/octet-stream',
+          file_size_bytes: file.size,
+          data_url: dataUrl,
+          uploaded_by_id: currentUser.id,
+          uploaded_by_name: currentUser.name,
+          uploaded_at: new Date().toISOString(),
+        });
+      } catch {
+        // ignore
+      }
+    }
+
+    if (sizeWarning) {
+      setUploadError('Note: One or more uploaded files exceed 3 MB.');
+    }
+
+    if (newDocs.length > 0) {
+      patchEngagement((prev) => ({
+        ...prev,
+        documents: [...(prev.documents || []), ...newDocs],
+      }));
+      setUploadSuccess(`Successfully attached ${newDocs.length} document(s).`);
+    }
+    e.target.value = '';
+  };
+
+  const handleExtractAllWithAi = async () => {
+    const fsDocs = (engagement.documents || []).filter(
+      (d) => d.category === 'PY_FINANCIAL_STATEMENTS' || d.category === 'CY_FINANCIAL_STATEMENTS' || (d.category as string) === 'PY_AUDITED_FS' || (d.category as string) === 'CY_MGMT_ACCOUNTS'
+    );
+    if (fsDocs.length === 0) {
+      setUploadError('Please upload PY Financial Statements or CY Financial Statements before running AI extraction.');
+      return;
+    }
+
+    setIsExtractingAll(true);
+    setUploadError('');
+    setUploadSuccess('');
+
+    try {
+      const extracted = await extractFinancialsFromEngagementDocs(engagement.documents || []);
+      setExtractedPreview(extracted);
+      setUploadSuccess('AI successfully analyzed attached documents.');
+    } catch (err: any) {
+      setUploadError(err.message || 'AI financial extraction failed.');
+    } finally {
+      setIsExtractingAll(false);
+    }
+  };
+
+  const handleAiExtractSingle = async (doc: EngagementDocument, target: 'PY' | 'CY') => {
+    setExtractingDocId(doc.id);
+    setUploadError('');
+    try {
+      const extracted = await extractFinancialsFromEngagementDocs([doc]);
+      setExtractedPreview(extracted);
+      setUploadSuccess(`AI successfully analyzed ${doc.file_name}.`);
+    } catch (err: any) {
+      setUploadError(err.message || 'AI extraction failed.');
+    } finally {
+      setExtractingDocId(null);
+    }
+  };
+
+  const handleApplyExtractedFinancials = () => {
+    if (!extractedPreview) return;
+    patchEngagement((prev) => ({
+      ...prev,
+      client_info: {
+        ...prev.client_info,
+        client_name: extractedPreview.client_name || prev.client_info.client_name,
+        fye_date: extractedPreview.fye_date || prev.client_info.fye_date,
+      },
+      financials: {
+        ...prev.financials,
+        py_revenue: extractedPreview.py_revenue > 0 ? extractedPreview.py_revenue : prev.financials.py_revenue,
+        cy_revenue: extractedPreview.cy_revenue > 0 ? extractedPreview.cy_revenue : prev.financials.cy_revenue,
+        py_assets: extractedPreview.py_assets > 0 ? extractedPreview.py_assets : prev.financials.py_assets,
+        cy_assets: extractedPreview.cy_assets > 0 ? extractedPreview.cy_assets : prev.financials.cy_assets,
+        py_expenses: extractedPreview.py_expenses > 0 ? extractedPreview.py_expenses : prev.financials.py_expenses,
+        cy_expenses: extractedPreview.cy_expenses > 0 ? extractedPreview.cy_expenses : prev.financials.cy_expenses,
+      },
+      quotation: extractedPreview.quoted_audit_fee && extractedPreview.quoted_audit_fee > 0 ? {
+        ...prev.quotation,
+        quotation_issued: true,
+        quotation_type: 'FIXED',
+        quotation_ref: extractedPreview.quotation_ref || prev.quotation.quotation_ref,
+        quotation_date: extractedPreview.quotation_date || prev.quotation.quotation_date,
+        fixed_audit_fee: extractedPreview.quoted_audit_fee,
+      } : prev.quotation,
+    }));
+    setExtractedPreview(null);
+    setUploadSuccess('Successfully applied extracted financial amounts to Comparative Financials & Quotation.');
+  };
+
+  const handleDeleteDoc = (docId: string) => {
+    patchEngagement((prev) => ({
+      ...prev,
+      documents: (prev.documents || []).filter((d) => d.id !== docId),
+    }));
+  };
+
+
+  const allActiveRoster = getStoredDepartmentRoster().filter(
+    (s: StaffMember) => s.is_active && s.role !== null
   );
-  // Eligible supervisors & reviewers
-  const supervisorsList = currentRoster.filter(
-    (s: StaffMember) => s.role === 'SUPERVISOR' || s.role === 'AUDIT_MANAGER' || s.role === 'AUDIT_PARTNER'
+  const activePicsList = allActiveRoster.filter(
+    (s: StaffMember) => s.role === 'AUDIT_PIC' || s.role === 'SUPERVISOR'
+  );
+  const activeSupervisorsList = allActiveRoster.filter(
+    (s: StaffMember) => s.role === 'SUPERVISOR'
+  );
+  const autoOversightList = allActiveRoster.filter(
+    (s: StaffMember) =>
+      s.role === 'AUDIT_MANAGER' || s.role === 'AUDIT_PARTNER' || s.role === 'SYSTEM_ADMIN'
   );
 
-  // Derived calculations
+  const leadPicId =
+    engagement.team_assignment.selected_pic_ids?.[0] || engagement.team_assignment.pic_id;
+  const leadPicStaff = allActiveRoster.find((s) => s.id === leadPicId);
+  const baselineChargeRate = leadPicStaff?.role === 'SUPERVISOR' ? 55 : 45;
   const revYoY = calculateYoYPercent(
     engagement.financials.cy_revenue,
     engagement.financials.py_revenue
@@ -138,14 +290,18 @@ export const EngagementWorkspace: React.FC<EngagementWorkspaceProps> = ({
   if (!engagement.client_info.fye_date) {
     validationErrors.push('Financial Year End (FYE) date is required.');
   }
-  if (!engagement.team_assignment.pic_id) {
-    validationErrors.push('Audit PIC assignment is required.');
+  const selectedPics =
+    engagement.team_assignment.selected_pic_ids ??
+    (engagement.team_assignment.pic_id ? [engagement.team_assignment.pic_id] : []);
+  const selectedSupervisors =
+    engagement.team_assignment.selected_supervisor_ids ??
+    (engagement.team_assignment.supervisor_id ? [engagement.team_assignment.supervisor_id] : []);
+
+  if (selectedPics.length === 0) {
+    validationErrors.push('At least one Audit PIC must be selected.');
   }
-  if (!engagement.team_assignment.supervisor_id) {
-    validationErrors.push('Team Supervisor assignment is required.');
-  }
-  if (!engagement.team_assignment.reviewer_id) {
-    validationErrors.push('Reviewer assignment is required.');
+  if (selectedSupervisors.length === 0) {
+    validationErrors.push('At least one Team Supervisor must be selected.');
   }
   if (engagement.prior_fees.py_audit_fee <= 0) {
     validationErrors.push('Previous Year Audit Fee must be greater than RM 0.');
@@ -261,6 +417,13 @@ export const EngagementWorkspace: React.FC<EngagementWorkspaceProps> = ({
         total_planned_hours: total,
       },
     }));
+  };
+
+  const handleSectionRoleChange = (sectionCode: string, role: AuditSection['assigned_role']) => {
+    const updatedSections = engagement.time_budget.sections.map((s) =>
+      s.section_code === sectionCode ? { ...s, assigned_role: role } : s
+    );
+    handleSectionsChange(updatedSections);
   };
 
   const currentStepIndex = LIFECYCLE_STEPS.findIndex((s) => s.key === engagement.status);
@@ -526,14 +689,14 @@ export const EngagementWorkspace: React.FC<EngagementWorkspaceProps> = ({
         </div>
       )}
 
-      {/* SECTION 01: Team Assignment & Client Financials */}
+      {/* SECTION 01: Team Assignment & Client Profile */}
       <section className="rounded-lg border border-slate-200 bg-white">
         <div className="border-b border-slate-200 px-6 py-4">
           <h2 className="text-base font-semibold text-slate-900">
-            01. Team Assignment, Client Profile &amp; Comparative Financials (CY vs PY)
+            01. Team Assignment &amp; Client Profile
           </h2>
           <p className="text-xs text-slate-500">
-            Select team roles, enter comparative financials, and review YoY % variance and MIA RPG 7 progressive fee benchmarks.
+            Select engagement team members, enter client name, FYE date, and industry classification.
           </p>
         </div>
 
@@ -541,93 +704,116 @@ export const EngagementWorkspace: React.FC<EngagementWorkspaceProps> = ({
           {/* Team Assignment Selectors */}
           <div className="grid grid-cols-1 gap-4 rounded-lg border border-slate-200 bg-slate-50/70 p-4 md:grid-cols-3">
             <div>
-              <label className="block text-xs font-medium text-slate-700">Audit PIC *</label>
-               <select
-                disabled={!isEditable}
-                value={engagement.team_assignment.pic_id}
-                onChange={(e) => {
-                  const staff = eligiblePics.find((s: StaffMember) => s.id === e.target.value);
-                  if (staff) {
-                    patchEngagement((prev) => ({
-                      ...prev,
-                      team_assignment: {
-                        ...prev.team_assignment,
-                        pic_id: staff.id,
-                        pic_name: staff.name,
-                        pic_email: staff.email,
-                        pic_role: staff.role === 'SUPERVISOR' ? 'SUPERVISOR' : 'AUDIT_PIC',
-                      },
-                    }));
-                  }
-                }}
-                className="mt-1.5 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-xs text-slate-900 disabled:bg-slate-50 focus:border-[#1E3A5F] focus:outline-none"
-              >
-                {eligiblePics.map((p: StaffMember) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name} ({p.title})
-                  </option>
-                ))}
-              </select>
+              <label className="block text-xs font-semibold text-slate-800 mb-2">
+                Assigned Audit PICs * (Multi-Select)
+              </label>
+              <div className="space-y-1.5 max-h-40 overflow-y-auto rounded border border-slate-300 bg-white p-2">
+                {activePicsList.length === 0 ? (
+                  <p className="text-[11px] text-slate-500 italic">No active Audit PICs found.</p>
+                ) : (
+                  activePicsList.map((p: StaffMember) => {
+                    const isChecked = selectedPics.includes(p.id);
+                    return (
+                      <label key={p.id} className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          disabled={!isEditable}
+                          checked={isChecked}
+                          onChange={(e) => {
+                            const nextPics = e.target.checked
+                              ? [...selectedPics, p.id]
+                              : selectedPics.filter((id) => id !== p.id);
+                            patchEngagement((prev) => ({
+                              ...prev,
+                              team_assignment: {
+                                ...prev.team_assignment,
+                                selected_pic_ids: nextPics,
+                                pic_id: nextPics[0] || '',
+                                pic_name: allActiveRoster.find((s) => s.id === nextPics[0])?.name || '',
+                                pic_email: allActiveRoster.find((s) => s.id === nextPics[0])?.email || '',
+                              },
+                            }));
+                          }}
+                          className="rounded border-slate-300 text-[#1E3A5F] focus:ring-[#1E3A5F]"
+                        />
+                        <span>
+                          {p.name} <span className="text-[10px] text-slate-500">({p.title})</span>
+                        </span>
+                      </label>
+                    );
+                  })
+                )}
+              </div>
             </div>
 
             <div>
-              <label className="block text-xs font-medium text-slate-700">Team Supervisor *</label>
-              <select
-                disabled={!isEditable}
-                value={engagement.team_assignment.supervisor_id || ''}
-                onChange={(e) => {
-                  const staff = supervisorsList.find((s: StaffMember) => s.id === e.target.value);
-                  if (staff) {
-                    patchEngagement((prev) => ({
-                      ...prev,
-                      team_assignment: {
-                        ...prev.team_assignment,
-                        supervisor_id: staff.id,
-                        supervisor_name: staff.name,
-                        supervisor_email: staff.email,
-                      },
-                    }));
-                  }
-                }}
-                className="mt-1.5 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-xs text-slate-900 disabled:bg-slate-50 focus:border-[#1E3A5F] focus:outline-none"
-              >
-                <option value="">Select Supervisor...</option>
-                {supervisorsList.map((s: StaffMember) => (
-                  <option key={s.id} value={s.id}>
-                    {s.name} ({s.title})
-                  </option>
-                ))}
-              </select>
+              <label className="block text-xs font-semibold text-slate-800 mb-2">
+                Assigned Team Supervisors * (Multi-Select)
+              </label>
+              <div className="space-y-1.5 max-h-40 overflow-y-auto rounded border border-slate-300 bg-white p-2">
+                {activeSupervisorsList.length === 0 ? (
+                  <p className="text-[11px] text-slate-500 italic">No active Supervisors found.</p>
+                ) : (
+                  activeSupervisorsList.map((s: StaffMember) => {
+                    const isChecked = selectedSupervisors.includes(s.id);
+                    return (
+                      <label key={s.id} className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          disabled={!isEditable}
+                          checked={isChecked}
+                          onChange={(e) => {
+                            const nextSups = e.target.checked
+                              ? [...selectedSupervisors, s.id]
+                              : selectedSupervisors.filter((id) => id !== s.id);
+                            patchEngagement((prev) => ({
+                              ...prev,
+                              team_assignment: {
+                                ...prev.team_assignment,
+                                selected_supervisor_ids: nextSups,
+                                supervisor_id: nextSups[0] || null,
+                                supervisor_name: allActiveRoster.find((st) => st.id === nextSups[0])?.name || null,
+                                supervisor_email: allActiveRoster.find((st) => st.id === nextSups[0])?.email || null,
+                              },
+                            }));
+                          }}
+                          className="rounded border-slate-300 text-[#1E3A5F] focus:ring-[#1E3A5F]"
+                        />
+                        <span>
+                          {s.name} <span className="text-[10px] text-slate-500">({s.title})</span>
+                        </span>
+                      </label>
+                    );
+                  })
+                )}
+              </div>
             </div>
 
             <div>
-              <label className="block text-xs font-medium text-slate-700">Reviewer *</label>
-              <select
-                disabled={!isEditable}
-                value={engagement.team_assignment.reviewer_id || ''}
-                onChange={(e) => {
-                  const staff = supervisorsList.find((s: StaffMember) => s.id === e.target.value);
-                  if (staff) {
-                    patchEngagement((prev) => ({
-                      ...prev,
-                      team_assignment: {
-                        ...prev.team_assignment,
-                        reviewer_id: staff.id,
-                        reviewer_name: staff.name,
-                        reviewer_email: staff.email,
-                      },
-                    }));
-                  }
-                }}
-                className="mt-1.5 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-xs text-slate-900 disabled:bg-slate-50 focus:border-[#1E3A5F] focus:outline-none"
-              >
-                <option value="">Select Reviewer...</option>
-                {supervisorsList.map((s: StaffMember) => (
-                  <option key={s.id} value={s.id}>
-                    {s.name} ({s.title})
-                  </option>
-                ))}
-              </select>
+              <label className="block text-xs font-semibold text-slate-800 mb-2">
+                Auto-Included Oversight
+              </label>
+              <div className="space-y-1.5 max-h-40 overflow-y-auto rounded border border-slate-200 bg-white p-2.5">
+                {autoOversightList.length === 0 ? (
+                  <p className="text-[11px] text-slate-500 italic">No active managers or partners found.</p>
+                ) : (
+                  autoOversightList.map((o: StaffMember) => (
+                    <div
+                      key={o.id}
+                      className="flex items-center justify-between text-xs py-1 border-b border-slate-100 last:border-0"
+                    >
+                      <span className="font-medium text-slate-800">{o.name}</span>
+                      <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-600">
+                        {o.role === 'AUDIT_MANAGER'
+                          ? 'Manager'
+                          : o.role === 'AUDIT_PARTNER'
+                          ? 'Partner'
+                          : 'Admin'}
+                      </span>
+                    </div>
+                  ))
+                )}
+              </div>
             </div>
           </div>
 
@@ -691,7 +877,296 @@ export const EngagementWorkspace: React.FC<EngagementWorkspaceProps> = ({
               </select>
             </div>
           </div>
+        </div>
+      </section>
 
+      {/* SECTION 02: Documents Upload */}
+      <section className="rounded-lg border border-slate-200 bg-white">
+        <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-200 px-6 py-4">
+          <div>
+            <h2 className="text-base font-semibold text-slate-900">
+              02. Documents Upload
+            </h2>
+            <p className="text-xs text-slate-500">
+              Upload PY financial statements, CY management accounts/trial balances, and client quotations. Use AI extraction to auto-populate comparative financials below.
+            </p>
+          </div>
+          <div className="flex items-center gap-3">
+            {canUploadDocs && (
+              <button
+                type="button"
+                disabled={isExtractingAll}
+                onClick={handleExtractAllWithAi}
+                className="inline-flex items-center gap-1.5 rounded-md bg-[#1E3A5F] px-4 py-2 text-xs font-semibold text-white hover:bg-[#162d4a] disabled:opacity-50 transition-colors whitespace-nowrap"
+              >
+                {isExtractingAll ? 'Extracting All...' : '✨ Extract All Amounts with AI'}
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div className="p-6 space-y-6">
+        <div className="p-6 space-y-6">
+          {uploadError && (
+            <div className="rounded-md border border-red-200 bg-red-50 p-3 text-xs text-red-800 flex items-center justify-between">
+              <span>{uploadError}</span>
+              <button
+                type="button"
+                onClick={() => setUploadError('')}
+                className="text-red-700 font-bold hover:text-red-900"
+              >
+                ✕
+              </button>
+            </div>
+          )}
+          {uploadSuccess && (
+            <div className="rounded-md border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-800">
+              {uploadSuccess}
+            </div>
+          )}
+
+          {/* 3 Dedicated Category Upload Slots */}
+          <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+            {/* Slot 1: PY Financial Statements */}
+            <div className="rounded-lg border border-slate-200 bg-slate-50/50 p-4 space-y-4 flex flex-col justify-between">
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className="text-xs font-semibold text-slate-900 flex items-center gap-1.5">
+                    <FileText className="h-4 w-4 text-purple-600" />
+                    1. PY Financial Statements
+                  </h3>
+                  <span className="rounded bg-purple-100 px-2 py-0.5 text-[10px] font-semibold text-purple-700">
+                    {engagement.documents?.filter(d => d.category === 'PY_FINANCIAL_STATEMENTS' || (d.category as string) === 'PY_AUDITED_FS').length || 0} file(s)
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-500 mb-3">
+                  PDF, Excel, CSV, Word, PNG, JPG · Max 3 MB
+                </p>
+
+                {canUploadDocs && (
+                  <div>
+                    <input
+                      type="file"
+                      multiple
+                      accept=".pdf,.xlsx,.xls,.csv,.png,.jpg,.jpeg,.docx"
+                      onChange={(e) => handleCategoryFileUpload(e, 'PY_FINANCIAL_STATEMENTS')}
+                      className="block w-full text-[11px] text-slate-500 file:mr-2 file:py-1.5 file:px-3 file:rounded file:border-0 file:text-[11px] file:font-semibold file:bg-[#1E3A5F] file:text-white hover:file:bg-[#162d4a] cursor-pointer"
+                    />
+                  </div>
+                )}
+              </div>
+
+              <div className="space-y-2 mt-4">
+                {engagement.documents?.filter(d => d.category === 'PY_FINANCIAL_STATEMENTS' || (d.category as string) === 'PY_AUDITED_FS').length === 0 ? (
+                  <p className="text-[11px] text-slate-400 italic">No files uploaded.</p>
+                ) : (
+                  <div className="space-y-2 max-h-48 overflow-y-auto">
+                    {engagement.documents?.filter(d => d.category === 'PY_FINANCIAL_STATEMENTS' || (d.category as string) === 'PY_AUDITED_FS').map((doc) => (
+                      <div key={doc.id} className="rounded border border-slate-200 bg-white p-2.5 text-xs space-y-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-medium text-slate-800 truncate" title={doc.file_name}>{doc.file_name}</span>
+                          <span className="font-mono text-[10px] text-slate-400">{formatFileSize(doc.file_size_bytes)}</span>
+                        </div>
+                        <div className="flex items-center justify-between gap-1 pt-1 border-t border-slate-100">
+                          <a
+                            href={doc.data_url}
+                            target="_blank"
+                            rel="noreferrer"
+                            download={doc.file_name}
+                            className="text-[11px] font-medium text-[#1E3A5F] hover:underline"
+                          >
+                            Preview
+                          </a>
+                          <div className="space-x-1.5">
+                            {isEditable && (
+                              <button
+                                type="button"
+                                disabled={extractingDocId === doc.id}
+                                onClick={() => handleAiExtractSingle(doc, 'PY')}
+                                className="text-[11px] font-medium text-purple-700 hover:underline disabled:opacity-50"
+                              >
+                                {extractingDocId === doc.id ? 'Extracting...' : '✨ Extract PY'}
+                              </button>
+                            )}
+                            {isEditable && (
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteDoc(doc.id)}
+                                className="text-[11px] font-medium text-red-600 hover:underline"
+                              >
+                                Delete
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Slot 2: CY Financial Statements */}
+            <div className="rounded-lg border border-slate-200 bg-slate-50/50 p-4 space-y-4 flex flex-col justify-between">
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className="text-xs font-semibold text-slate-900 flex items-center gap-1.5">
+                    <FileText className="h-4 w-4 text-blue-600" />
+                    2. CY Financial Statements
+                  </h3>
+                  <span className="rounded bg-blue-100 px-2 py-0.5 text-[10px] font-semibold text-blue-700">
+                    {engagement.documents?.filter(d => d.category === 'CY_FINANCIAL_STATEMENTS' || (d.category as string) === 'CY_MGMT_ACCOUNTS').length || 0} file(s)
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-500 mb-3">
+                  PDF, Excel, CSV, Word, PNG, JPG · Max 3 MB
+                </p>
+
+                {canUploadDocs && (
+                  <div>
+                    <input
+                      type="file"
+                      multiple
+                      accept=".pdf,.xlsx,.xls,.csv,.png,.jpg,.jpeg,.docx"
+                      onChange={(e) => handleCategoryFileUpload(e, 'CY_FINANCIAL_STATEMENTS')}
+                      className="block w-full text-[11px] text-slate-500 file:mr-2 file:py-1.5 file:px-3 file:rounded file:border-0 file:text-[11px] file:font-semibold file:bg-[#1E3A5F] file:text-white hover:file:bg-[#162d4a] cursor-pointer"
+                    />
+                  </div>
+                )}
+              </div>
+
+              <div className="space-y-2 mt-4">
+                {engagement.documents?.filter(d => d.category === 'CY_FINANCIAL_STATEMENTS' || (d.category as string) === 'CY_MGMT_ACCOUNTS').length === 0 ? (
+                  <p className="text-[11px] text-slate-400 italic">No files uploaded.</p>
+                ) : (
+                  <div className="space-y-2 max-h-48 overflow-y-auto">
+                    {engagement.documents?.filter(d => d.category === 'CY_FINANCIAL_STATEMENTS' || (d.category as string) === 'CY_MGMT_ACCOUNTS').map((doc) => (
+                      <div key={doc.id} className="rounded border border-slate-200 bg-white p-2.5 text-xs space-y-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-medium text-slate-800 truncate" title={doc.file_name}>{doc.file_name}</span>
+                          <span className="font-mono text-[10px] text-slate-400">{formatFileSize(doc.file_size_bytes)}</span>
+                        </div>
+                        <div className="flex items-center justify-between gap-1 pt-1 border-t border-slate-100">
+                          <a
+                            href={doc.data_url}
+                            target="_blank"
+                            rel="noreferrer"
+                            download={doc.file_name}
+                            className="text-[11px] font-medium text-[#1E3A5F] hover:underline"
+                          >
+                            Preview
+                          </a>
+                          <div className="space-x-1.5">
+                            {isEditable && (
+                              <button
+                                type="button"
+                                disabled={extractingDocId === doc.id}
+                                onClick={() => handleAiExtractSingle(doc, 'CY')}
+                                className="text-[11px] font-medium text-blue-700 hover:underline disabled:opacity-50"
+                              >
+                                {extractingDocId === doc.id ? 'Extracting...' : '✨ Extract CY'}
+                              </button>
+                            )}
+                            {isEditable && (
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteDoc(doc.id)}
+                                className="text-[11px] font-medium text-red-600 hover:underline"
+                              >
+                                Delete
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Slot 3: Quotation */}
+            <div className="rounded-lg border border-slate-200 bg-slate-50/50 p-4 space-y-4 flex flex-col justify-between">
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className="text-xs font-semibold text-slate-900 flex items-center gap-1.5">
+                    <FileText className="h-4 w-4 text-emerald-600" />
+                    3. Quotation
+                  </h3>
+                  <span className="rounded bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold text-emerald-700">
+                    {engagement.documents?.filter(d => d.category === 'QUOTATION').length || 0} file(s)
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-500 mb-3">
+                  PDF, Excel, CSV, Word, PNG, JPG · Max 3 MB
+                </p>
+
+                {canUploadDocs && (
+                  <div>
+                    <input
+                      type="file"
+                      multiple
+                      accept=".pdf,.xlsx,.xls,.csv,.png,.jpg,.jpeg,.docx"
+                      onChange={(e) => handleCategoryFileUpload(e, 'QUOTATION')}
+                      className="block w-full text-[11px] text-slate-500 file:mr-2 file:py-1.5 file:px-3 file:rounded file:border-0 file:text-[11px] file:font-semibold file:bg-[#1E3A5F] file:text-white hover:file:bg-[#162d4a] cursor-pointer"
+                    />
+                  </div>
+                )}
+              </div>
+
+              <div className="space-y-2 mt-4">
+                {engagement.documents?.filter(d => d.category === 'QUOTATION').length === 0 ? (
+                  <p className="text-[11px] text-slate-400 italic">No files uploaded.</p>
+                ) : (
+                  <div className="space-y-2 max-h-48 overflow-y-auto">
+                    {engagement.documents?.filter(d => d.category === 'QUOTATION').map((doc) => (
+                      <div key={doc.id} className="rounded border border-slate-200 bg-white p-2.5 text-xs space-y-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-medium text-slate-800 truncate" title={doc.file_name}>{doc.file_name}</span>
+                          <span className="font-mono text-[10px] text-slate-400">{formatFileSize(doc.file_size_bytes)}</span>
+                        </div>
+                        <div className="flex items-center justify-between gap-1 pt-1 border-t border-slate-100">
+                          <a
+                            href={doc.data_url}
+                            target="_blank"
+                            rel="noreferrer"
+                            download={doc.file_name}
+                            className="text-[11px] font-medium text-[#1E3A5F] hover:underline"
+                          >
+                            Preview
+                          </a>
+                          {isEditable && (
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteDoc(doc.id)}
+                              className="text-[11px] font-medium text-red-600 hover:underline"
+                            >
+                              Delete
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* SECTION 03: Comparative Financials (CY vs PY) */}
+      <section className="rounded-lg border border-slate-200 bg-white">
+        <div className="border-b border-slate-200 px-6 py-4">
+          <h2 className="text-base font-semibold text-slate-900">
+            03. Comparative Financials (CY vs PY)
+          </h2>
+          <p className="text-xs text-slate-500">
+            Review YoY % variance and MIA RPG 7 progressive fee benchmarks based on uploaded financial statements or manual input.
+          </p>
+        </div>
+
+        <div className="p-6">
           {/* Comparative Financials Table */}
           <div className="overflow-x-auto">
             <table className="w-full border-collapse text-sm">
@@ -1468,14 +1943,15 @@ export const EngagementWorkspace: React.FC<EngagementWorkspaceProps> = ({
         </div>
       </section>
 
-      {/* SECTION 04: 26-Section Audit Hours Planner */}
+      {/* SECTION 06: 26-Section Audit Fieldwork Hour Allocation */}
       <SectionHoursPlanner
         sections={engagement.time_budget.sections}
         allowedHoursCap={engagement.time_budget.allowed_hours_cap}
-        chargeOutRate={engagement.time_budget.charge_out_rate}
+        chargeOutRate={baselineChargeRate}
         clearanceHours={engagement.time_budget.clearance_hours}
         isEditable={isEditable}
         onChangeSections={handleSectionsChange}
+        onChangeSectionRole={handleSectionRoleChange}
       />
 
       {/* PIC Submit Bar */}
@@ -1522,6 +1998,99 @@ export const EngagementWorkspace: React.FC<EngagementWorkspaceProps> = ({
           onClose={() => setShowLetterModal(false)}
         />
       )}
+
+      {extractedPreview && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4">
+          <div className="w-full max-w-2xl rounded-lg border border-slate-200 bg-white p-6 shadow-xl space-y-5 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between border-b border-slate-200 pb-3">
+              <div>
+                <h3 className="text-base font-semibold text-slate-900">
+                  ✨ Gemini AI Analysis &amp; Verification Card
+                </h3>
+                <p className="text-xs text-slate-500">
+                  Review extracted comparative financial figures before applying them to the engagement.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setExtractedPreview(null)}
+                className="text-slate-400 hover:text-slate-600 font-bold"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 text-xs">
+              <div className="rounded-md border border-slate-200 bg-slate-50 p-3">
+                <span className="font-semibold text-slate-700">Client Name:</span>{' '}
+                <span className="text-slate-900 font-medium">{extractedPreview.client_name || '—'}</span>
+              </div>
+              <div className="rounded-md border border-slate-200 bg-slate-50 p-3">
+                <span className="font-semibold text-slate-700">Financial Year End (FYE):</span>{' '}
+                <span className="text-slate-900 font-mono">{extractedPreview.fye_date || '—'}</span>
+              </div>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full border-collapse text-xs">
+                <thead>
+                  <tr className="border-b border-slate-200 bg-slate-50 text-slate-500">
+                    <th className="px-3 py-2 text-left font-semibold">Financial Metric</th>
+                    <th className="px-3 py-2 text-right font-semibold">Prior Year (PY) RM</th>
+                    <th className="px-3 py-2 text-right font-semibold">Current Year (CY) RM</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-200 font-mono">
+                  <tr>
+                    <td className="px-3 py-2.5 font-sans font-medium text-slate-800">Total Gross Revenue</td>
+                    <td className="px-3 py-2.5 text-right text-slate-700">{formatRM(extractedPreview.py_revenue)}</td>
+                    <td className="px-3 py-2.5 text-right font-semibold text-slate-900">{formatRM(extractedPreview.cy_revenue)}</td>
+                  </tr>
+                  <tr>
+                    <td className="px-3 py-2.5 font-sans font-medium text-slate-800">Total Assets (Excl. Intangibles)</td>
+                    <td className="px-3 py-2.5 text-right text-slate-700">{formatRM(extractedPreview.py_assets)}</td>
+                    <td className="px-3 py-2.5 text-right font-semibold text-slate-900">{formatRM(extractedPreview.cy_assets)}</td>
+                  </tr>
+                  <tr>
+                    <td className="px-3 py-2.5 font-sans font-medium text-slate-800">Total Operating Expenses</td>
+                    <td className="px-3 py-2.5 text-right text-slate-700">{formatRM(extractedPreview.py_expenses)}</td>
+                    <td className="px-3 py-2.5 text-right font-semibold text-slate-900">{formatRM(extractedPreview.cy_expenses)}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            {extractedPreview.quoted_audit_fee && extractedPreview.quoted_audit_fee > 0 ? (
+              <div className="rounded-md border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-900">
+                <span className="font-semibold">Detected Quotation:</span> Ref {extractedPreview.quotation_ref || 'N/A'} dated {extractedPreview.quotation_date || 'N/A'} — Quoted Audit Fee: <span className="font-mono font-bold">{formatRM(extractedPreview.quoted_audit_fee)}</span>
+              </div>
+            ) : null}
+
+            <div className="rounded-md border border-slate-200 bg-slate-50 p-3 text-xs space-y-1">
+              <p className="font-semibold text-slate-700">AI Extraction Notes &amp; Line Item Mapping:</p>
+              <p className="text-slate-600 italic">{extractedPreview.extraction_notes}</p>
+            </div>
+
+            <div className="flex justify-end gap-3 border-t border-slate-200 pt-4">
+              <button
+                type="button"
+                onClick={() => setExtractedPreview(null)}
+                className="rounded-md px-4 py-2 text-xs font-medium text-slate-600 hover:bg-slate-100"
+              >
+                Dismiss
+              </button>
+              <button
+                type="button"
+                onClick={handleApplyExtractedFinancials}
+                className="inline-flex items-center gap-1.5 rounded-md bg-[#1E3A5F] px-5 py-2 text-xs font-semibold text-white hover:bg-[#162d4a]"
+              >
+                Apply to Comparative Financials
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
+

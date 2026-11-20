@@ -9,6 +9,28 @@ export const DEFAULT_CHARGE_OUT_RATE = 45;
 export const DEFAULT_CLEARANCE_HOURS = 7.0;
 export const HOURS_PER_WORKING_DAY = 7.0;
 
+export const ROLE_CHARGE_RATES = {
+  AUDIT_PIC: 45,
+  SUPERVISOR: 55,
+  AUDIT_MANAGER: 65,
+  AUDIT_PARTNER: 75,
+} as const;
+
+export function getChargeRateForRole(role: string | null | undefined): number {
+  switch (role) {
+    case 'AUDIT_PIC':
+      return 45;
+    case 'SUPERVISOR':
+      return 55;
+    case 'AUDIT_MANAGER':
+      return 65;
+    case 'AUDIT_PARTNER':
+      return 75;
+    default:
+      return 45;
+  }
+}
+
 /**
  * MIA RPG 7 (Revised) — Gross Revenue & Total Assets (Excl. Intangibles) Progressive Scale
  * Reconciled exactly to Excel guideline:

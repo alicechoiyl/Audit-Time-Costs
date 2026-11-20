@@ -43,7 +43,7 @@ export const EngagementList: React.FC<EngagementListProps> = ({
       !q ||
       eng.client_info.client_name.toLowerCase().includes(q) ||
       eng.engagement_id.toLowerCase().includes(q) ||
-      eng.team_assignment.pic_name.toLowerCase().includes(q);
+      ((eng.team_assignment.pic_name?.toLowerCase().includes(q)) ?? false);
     return matchesStatus && matchesSearch;
   });
 
@@ -256,9 +256,16 @@ export const EngagementList: React.FC<EngagementListProps> = ({
                       className="cursor-pointer hover:bg-slate-50/80 transition-colors"
                     >
                       <td className="px-5 py-3.5">
-                        <p className="font-semibold text-slate-900">
-                          {eng.client_info.client_name}
-                        </p>
+                        <div className="flex items-center gap-2">
+                          <p className="font-semibold text-slate-900">
+                            {eng.client_info.client_name || 'Untitled Client'}
+                          </p>
+                          {(eng.documents?.length || 0) > 0 && (
+                            <span className="inline-flex items-center gap-0.5 rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[10px] font-medium text-slate-700" title={`${eng.documents.length} attached document(s)`}>
+                              📎 {eng.documents.length}
+                            </span>
+                          )}
+                        </div>
                         <p className="mt-0.5 text-[11px] text-slate-500">
                           <span className="font-mono">{eng.engagement_id}</span> · FYE{' '}
                           {formatDateDisplay(eng.client_info.fye_date)} · {eng.client_info.industry}

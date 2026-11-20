@@ -15,6 +15,7 @@ import {
   calculateRpg7Summary,
   formatRM,
   getRangePositionLabel,
+  getChargeRateForRole,
 } from '../utils/rpg7';
 
 interface PartnerPricingDeskProps {
@@ -44,7 +45,10 @@ export const PartnerPricingDesk: React.FC<PartnerPricingDeskProps> = ({
   );
 
   const budgetedTimeCost = Math.round(
-    engagement.time_budget.total_planned_hours * engagement.time_budget.charge_out_rate
+    engagement.time_budget.sections.reduce(
+      (sum, s) => sum + s.planned_hours * getChargeRateForRole(s.assigned_role),
+      0
+    )
   );
 
   const defaultSuggestedCy =

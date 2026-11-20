@@ -35,7 +35,8 @@ import { EngagementWorkspace } from './components/EngagementWorkspace';
 import { NotificationDrawer } from './components/NotificationDrawer';
 import { RosterView } from './components/RosterView';
 import { Rpg7ReferenceView } from './components/Rpg7ReferenceView';
-import { LoginView } from './components/LoginView';
+import { AuthLandingView } from './components/AuthLandingView';
+import { getActiveGeminiApiKey } from './utils/aiFinancialExtractor';
 
 const STORAGE_ENGAGEMENTS_KEY = 'meridian_audit_engagements_v3';
 const STORAGE_NOTIFICATIONS_KEY = 'meridian_audit_notifications_v3';
@@ -93,6 +94,10 @@ export function App() {
   const [isNotifOpen, setIsNotifOpen] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [toastMessage, setToastMessage] = useState<string>('');
+  const [showGeminiModal, setShowGeminiModal] = useState(false);
+  const [geminiKeyVal, setGeminiKeyVal] = useState(() => getActiveGeminiApiKey());
+  const hasGeminiKey = Boolean(geminiKeyVal);
+
 
   useEffect(() => {
     try {
@@ -123,7 +128,7 @@ export function App() {
   }, [notifications]);
 
   if (!currentUser) {
-    return <LoginView onLogin={(staff) => setCurrentUser(staff)} />;
+    return <AuthLandingView onLogin={(staff) => setCurrentUser(staff)} />;
   }
 
   const roster = getStoredDepartmentRoster();
@@ -188,20 +193,25 @@ export function App() {
         industry: INDUSTRY_OPTIONS[0],
       },
       team_assignment: {
-        pic_id: currentUser.id,
-        pic_name: currentUser.name,
-        pic_email: currentUser.email,
-        pic_role: currentUser.role === 'SUPERVISOR' ? 'SUPERVISOR' : 'AUDIT_PIC',
-        supervisor_id: supervisor ? supervisor.id : (roster.find((s) => s.role === 'SUPERVISOR')?.id || ''),
-        supervisor_name: supervisor ? supervisor.name : (roster.find((s) => s.role === 'SUPERVISOR')?.name || ''),
-        supervisor_email: supervisor ? supervisor.email : (roster.find((s) => s.role === 'SUPERVISOR')?.email || ''),
-        reviewer_id: roster.find((s) => s.role === 'SUPERVISOR' && s.id !== supervisor?.id)?.id || roster.find((s) => s.role === 'SUPERVISOR')?.id || '',
-        reviewer_name: roster.find((s) => s.role === 'SUPERVISOR' && s.id !== supervisor?.id)?.name || roster.find((s) => s.role === 'SUPERVISOR')?.name || '',
-        reviewer_email: roster.find((s) => s.role === 'SUPERVISOR' && s.id !== supervisor?.id)?.email || roster.find((s) => s.role === 'SUPERVISOR')?.email || '',
+        lead_pic_id: currentUser.id,
+        lead_pic_name: currentUser.name,
+        lead_pic_email: currentUser.email,
+        selected_pic_ids: [currentUser.id],
+        selected_supervisor_ids: roster.filter((s) => s.role === 'SUPERVISOR' && s.is_active).slice(0, 1).map((s) => s.id),
         manager_id: auditManager ? auditManager.id : '',
         manager_name: auditManager ? auditManager.name : 'Audit Manager',
         partner_id: auditPartner ? auditPartner.id : '',
         partner_name: auditPartner ? auditPartner.name : 'Audit Partner',
+        pic_id: currentUser.id,
+        pic_name: currentUser.name,
+        pic_email: currentUser.email,
+        pic_role: currentUser.role === 'SUPERVISOR' ? 'SUPERVISOR' : 'AUDIT_PIC',
+        supervisor_id: roster.filter((s) => s.role === 'SUPERVISOR' && s.is_active)[0]?.id || null,
+        supervisor_name: roster.filter((s) => s.role === 'SUPERVISOR' && s.is_active)[0]?.name || null,
+        supervisor_email: roster.filter((s) => s.role === 'SUPERVISOR' && s.is_active)[0]?.email || null,
+        reviewer_id: '',
+        reviewer_name: '',
+        reviewer_email: '',
       },
       financials: {
         cy_revenue: 0,
@@ -263,6 +273,7 @@ export function App() {
         last_return_note: '',
         last_returned_by: '',
       },
+      documents: [],
     };
 
     setEngagements((prev) => [newJob, ...prev]);
@@ -300,15 +311,16 @@ export function App() {
       calculateYoYPercent(eng.financials.cy_expenses, eng.financials.py_expenses)
     );
 
-    const targetManagerId = auditManager ? auditManager.id : 'manager-1';
-    const targetManagerName = auditManager ? auditManager.name : 'Audit Manager';
+    const activeManagers = roster.filter((s) => s.role === 'AUDIT_MANAGER' && s.is_active);
+    const recipientIds = activeManagers.map((m) => m.id);
+    const recipientLabels = activeManagers.map((m) => `${m.name} (Audit Manager)`);
 
     pushNotification({
       engagement_id: eng.engagement_id,
       client_name: eng.client_info.client_name,
       trigger_event: 'SUBMITTED_TO_MANAGER',
-      recipient_ids: [targetManagerId],
-      recipient_labels: [targetManagerName],
+      recipient_ids: recipientIds.length > 0 ? recipientIds : ['manager-fallback'],
+      recipient_labels: recipientLabels.length > 0 ? recipientLabels : ['Audit Manager'],
       title: 'New Engagement Submitted for 1st-Level Review',
       message: `${eng.team_assignment.pic_name} submitted ${eng.client_info.client_name} (FYE ${formatDateDisplay(
         eng.client_info.fye_date
@@ -333,6 +345,7 @@ export function App() {
       ],
     });
 
+    const targetManagerName = activeManagers[0]?.name || 'Audit Manager';
     showToast(`Submitted ${eng.client_info.client_name} to ${targetManagerName}.`);
   };
 
@@ -368,16 +381,22 @@ export function App() {
           eng.quotation.range_audit_max
         )} (Ref Only)`;
 
-    const targetPartnerId = auditPartner ? auditPartner.id : 'partner-1';
-    const targetPartnerName = auditPartner ? auditPartner.name : 'Audit Partner';
-    const currentManagerName = auditManager ? auditManager.name : 'Audit Manager';
+    const targetPartner = roster.find((s) => s.role === 'AUDIT_PARTNER' && s.is_active);
+    const targetPartnerId = targetPartner ? targetPartner.id : 'partner-1';
+    const targetPartnerName = targetPartner ? targetPartner.name : 'Audit Partner';
+    const currentManager = roster.find((s) => s.role === 'AUDIT_MANAGER' && s.is_active);
+    const currentManagerName = currentManager ? currentManager.name : 'Audit Manager';
+
+    const activePartners = roster.filter((s) => s.role === 'AUDIT_PARTNER' && s.is_active);
+    const partnerIds = activePartners.map((p) => p.id);
+    const partnerLabels = activePartners.map((p) => `${p.name} (Audit Partner)`);
 
     pushNotification({
       engagement_id: eng.engagement_id,
       client_name: eng.client_info.client_name,
       trigger_event: 'APPROVED_BY_MANAGER',
-      recipient_ids: [targetPartnerId],
-      recipient_labels: [targetPartnerName],
+      recipient_ids: partnerIds.length > 0 ? partnerIds : [targetPartnerId],
+      recipient_labels: partnerLabels.length > 0 ? partnerLabels : [targetPartnerName],
       title: '1st-Level Approved — Ready for Partner Fee Decision',
       message: `${currentManagerName} approved ${eng.client_info.client_name} (PIC: ${eng.team_assignment.pic_name}) for 2nd-Level Partner review.`,
       details: [
@@ -417,18 +436,21 @@ export function App() {
     handleUpdateEngagement(updated);
     setSelectedEngagementId(null);
 
+    const picId = eng.team_assignment.lead_pic_id || eng.team_assignment.pic_id || '';
+    const picName = eng.team_assignment.lead_pic_name || eng.team_assignment.pic_name || 'Audit PIC';
+
     pushNotification({
       engagement_id: eng.engagement_id,
       client_name: eng.client_info.client_name,
       trigger_event: 'RETURNED_BY_MANAGER',
-      recipient_ids: [eng.team_assignment.pic_id],
-      recipient_labels: [eng.team_assignment.pic_name],
+      recipient_ids: [picId],
+      recipient_labels: [picName],
       title: 'Returned for Revision by Audit Manager',
       message: `${currentManagerName} returned ${eng.client_info.client_name} to Draft: "${reason}"`,
       details: [{ label: 'Action Required', value: 'Update draft and resubmit to Manager' }],
     });
 
-    showToast(`Returned ${eng.client_info.client_name} to ${eng.team_assignment.pic_name}.`);
+    showToast(`Returned ${eng.client_info.client_name} to ${picName}.`);
   };
 
   const handlePartnerApprove = (
@@ -450,27 +472,14 @@ export function App() {
     };
     handleUpdateEngagement(updated);
 
-    const recipientIds: string[] = [eng.team_assignment.pic_id];
-    const recipientLabels: string[] = [`${eng.team_assignment.pic_name} (Audit PIC)`];
+    const activeManagers = roster.filter((s) => s.role === 'AUDIT_MANAGER' && s.is_active);
+    const picIds = eng.team_assignment.selected_pic_ids ?? (eng.team_assignment.pic_id ? [eng.team_assignment.pic_id] : []);
+    const supIds = eng.team_assignment.selected_supervisor_ids ?? (eng.team_assignment.supervisor_id ? [eng.team_assignment.supervisor_id] : []);
 
-    const supStaff = roster.find((s) => s.id === eng.team_assignment.supervisor_id);
-    if (supStaff && !recipientIds.includes(supStaff.id)) {
-      recipientIds.push(supStaff.id);
-      recipientLabels.push(`${supStaff.name} (Team Supervisor)`);
-    }
-
-    const revStaff = roster.find((s) => s.id === eng.team_assignment.reviewer_id);
-    if (revStaff && !recipientIds.includes(revStaff.id)) {
-      recipientIds.push(revStaff.id);
-      recipientLabels.push(`${revStaff.name} (Reviewer)`);
-    }
-
-    const targetManagerId = auditManager ? auditManager.id : 'manager-1';
-    const targetManagerName = auditManager ? auditManager.name : 'Audit Manager';
-    if (!recipientIds.includes(targetManagerId)) {
-      recipientIds.push(targetManagerId);
-      recipientLabels.push(`${targetManagerName} (Audit Manager)`);
-    }
+    const recipientIds = Array.from(new Set([...picIds, ...supIds, ...activeManagers.map((m) => m.id)]));
+    const recipientLabels = roster
+      .filter((s) => recipientIds.includes(s.id))
+      .map((s) => `${s.name} (${s.title})`);
 
     const targetPartnerName = auditPartner ? auditPartner.name : 'Audit Partner';
 
@@ -525,18 +534,21 @@ export function App() {
     handleUpdateEngagement(updated);
     setSelectedEngagementId(null);
 
+    const picId = eng.team_assignment.lead_pic_id || eng.team_assignment.pic_id || '';
+    const picName = eng.team_assignment.lead_pic_name || eng.team_assignment.pic_name || 'Audit PIC';
+
     pushNotification({
       engagement_id: eng.engagement_id,
       client_name: eng.client_info.client_name,
       trigger_event: 'RETURNED_BY_PARTNER',
-      recipient_ids: [eng.team_assignment.pic_id, targetManagerId],
-      recipient_labels: [eng.team_assignment.pic_name, auditManager?.name || 'Audit Manager'],
+      recipient_ids: [picId, targetManagerId],
+      recipient_labels: [picName, auditManager?.name || 'Audit Manager'],
       title: 'Returned for Revision by Audit Partner',
       message: `${targetPartnerName} returned ${eng.client_info.client_name} to Draft: "${reason}"`,
       details: [{ label: 'Action Required', value: 'PIC to revise and resubmit' }],
     });
 
-    showToast(`Returned ${eng.client_info.client_name} to ${eng.team_assignment.pic_name}.`);
+    showToast(`Returned ${eng.client_info.client_name} to ${picName}.`);
   };
 
   const handleUpdateExtension = (
@@ -563,8 +575,10 @@ export function App() {
     };
     handleUpdateEngagement(updated);
 
-    const recipientIds = [eng.team_assignment.pic_id];
-    const recipientLabels = [eng.team_assignment.pic_name];
+    const picId = eng.team_assignment.lead_pic_id || eng.team_assignment.pic_id || '';
+    const picName = eng.team_assignment.lead_pic_name || eng.team_assignment.pic_name || 'Audit PIC';
+    const recipientIds: string[] = [picId];
+    const recipientLabels: string[] = [picName];
     if (eng.team_assignment.supervisor_id) {
       recipientIds.push(eng.team_assignment.supervisor_id);
       recipientLabels.push(eng.team_assignment.supervisor_name || 'Supervisor');
@@ -792,6 +806,20 @@ export function App() {
               </div>
             </div>
 
+            {/* Gemini AI Status Pill */}
+            <button
+              type="button"
+              onClick={() => setShowGeminiModal(true)}
+              className={`hidden md:inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium transition-colors ${
+                hasGeminiKey
+                  ? 'border-emerald-200 bg-emerald-50 text-emerald-800 hover:bg-emerald-100'
+                  : 'border-amber-200 bg-amber-50 text-amber-800 hover:bg-amber-100'
+              }`}
+            >
+              <span className={`h-2 w-2 rounded-full ${hasGeminiKey ? 'bg-emerald-500' : 'bg-amber-500'}`} />
+              <span>{hasGeminiKey ? 'Gemini AI: Connected' : 'Gemini AI: Configure Key'}</span>
+            </button>
+
             {/* Notification Bell */}
             <button
               type="button"
@@ -869,6 +897,50 @@ export function App() {
       {toastMessage && (
         <div className="no-print fixed bottom-5 right-5 z-50 rounded-md border border-slate-700 bg-slate-900 px-4 py-2.5 text-xs font-medium text-white shadow-lg">
           {toastMessage}
+        </div>
+      )}
+
+      {/* Gemini API Key Modal */}
+      {showGeminiModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4">
+          <div className="w-full max-w-md rounded-lg border border-slate-200 bg-white p-6 shadow-xl space-y-4">
+            <h3 className="text-base font-semibold text-slate-900">Configure Gemini API Key</h3>
+            <p className="text-xs text-slate-500">
+              Enter your Google Gemini API key to enable AI Document Financial Extraction. The key is securely saved in your browser&apos;s local storage.
+            </p>
+            <div>
+              <label className="block text-xs font-medium text-slate-700">Gemini API Key</label>
+              <input
+                type="password"
+                value={geminiKeyVal}
+                onChange={(e) => setGeminiKeyVal(e.target.value)}
+                placeholder="AIzaSy..."
+                className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-xs font-mono"
+              />
+            </div>
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setShowGeminiModal(false)}
+                className="rounded-md px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-100"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  try {
+                    localStorage.setItem('gemini_api_key', geminiKeyVal.trim());
+                    showToast('Gemini API key saved successfully.');
+                  } catch {}
+                  setShowGeminiModal(false);
+                }}
+                className="rounded-md bg-[#1E3A5F] px-4 py-1.5 text-xs font-semibold text-white hover:bg-[#162d4a]"
+              >
+                Save Key
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

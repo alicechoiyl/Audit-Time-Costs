@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { AlertCircle, CheckCircle2, RotateCcw } from 'lucide-react';
 import type { AuditSection, SectionCategory } from '../types/audit';
-import { formatRM } from '../utils/rpg7';
+import { formatRM, getChargeRateForRole } from '../utils/rpg7';
 
 interface SectionHoursPlannerProps {
   sections: AuditSection[];
@@ -10,6 +10,7 @@ interface SectionHoursPlannerProps {
   clearanceHours: number;
   isEditable: boolean;
   onChangeSections: (updatedSections: AuditSection[]) => void;
+  onChangeSectionRole: (sectionCode: string, role: AuditSection['assigned_role']) => void;
 }
 
 const CATEGORY_ORDER: SectionCategory[] = [
@@ -27,6 +28,7 @@ export const SectionHoursPlanner: React.FC<SectionHoursPlannerProps> = ({
   clearanceHours,
   isEditable,
   onChangeSections,
+  onChangeSectionRole,
 }) => {
   const [clampNotice, setClampNotice] = useState<string>('');
 
@@ -36,7 +38,11 @@ export const SectionHoursPlanner: React.FC<SectionHoursPlannerProps> = ({
   const isOverCap = totalPlanned > allowedHoursCap;
   const utilizationPct =
     allowedHoursCap > 0 ? Math.min(100, (totalPlanned / allowedHoursCap) * 100) : 0;
-  const budgetedTimeCost = Math.round(totalPlanned * chargeOutRate);
+  
+  // Role-weighted budgeted time cost across all 26 sections
+  const budgetedTimeCost = Math.round(
+    sections.reduce((sum, s) => sum + s.planned_hours * getChargeRateForRole(s.assigned_role), 0)
+  );
   const netFieldworkCap = Math.max(0, Math.round((allowedHoursCap - clearanceHours) * 10) / 10);
 
   const handleHourInput = (sectionCode: string, rawVal: string) => {
@@ -140,7 +146,7 @@ export const SectionHoursPlanner: React.FC<SectionHoursPlannerProps> = ({
               </p>
             </div>
             <div className="text-right">
-              <p className="text-xs text-slate-500">Budgeted Cost</p>
+              <p className="text-xs text-slate-500">Role-Weighted Cost</p>
               <p className="font-mono text-sm font-semibold text-slate-900 tabular-nums">
                 {formatRM(budgetedTimeCost)}
               </p>
@@ -197,8 +203,11 @@ export const SectionHoursPlanner: React.FC<SectionHoursPlannerProps> = ({
       <div className="divide-y divide-slate-200">
         {CATEGORY_ORDER.map((category) => {
           const catSections = sections.filter((s) => s.category === category);
-          const catTotal =
+          const catTotalHours =
             Math.round(catSections.reduce((acc, s) => acc + s.planned_hours, 0) * 10) / 10;
+          const catTotalCost = Math.round(
+            catSections.reduce((acc, s) => acc + s.planned_hours * getChargeRateForRole(s.assigned_role), 0)
+          );
 
           return (
             <div key={category} className="px-6 py-4">
@@ -210,42 +219,71 @@ export const SectionHoursPlanner: React.FC<SectionHoursPlannerProps> = ({
                   </span>
                 </h4>
                 <span className="font-mono text-xs font-semibold text-slate-700 tabular-nums">
-                  Subtotal: {catTotal.toFixed(1)} hrs · {formatRM(Math.round(catTotal * chargeOutRate))}
+                  Subtotal: {catTotalHours.toFixed(1)} hrs · {formatRM(catTotalCost)}
                 </span>
               </div>
 
-              <div className="grid grid-cols-1 gap-x-6 gap-y-2 md:grid-cols-2">
-                {catSections.map((sec) => (
-                  <div
-                    key={sec.section_code}
-                    className="flex items-center justify-between gap-3 border-b border-slate-100 py-1.5"
-                  >
-                    <div className="min-w-0 flex-1">
-                      <span className="mr-2 font-mono text-xs text-slate-400">
-                        {sec.section_code}
-                      </span>
-                      <span className="text-xs text-slate-800">{sec.section_name}</span>
+              <div className="grid grid-cols-1 gap-x-6 gap-y-2.5 md:grid-cols-2">
+                {catSections.map((sec) => {
+                  const secCost = Math.round(sec.planned_hours * getChargeRateForRole(sec.assigned_role));
+
+                  return (
+                    <div
+                      key={sec.section_code}
+                      className="flex items-center justify-between gap-3 rounded border border-slate-100 bg-slate-50/50 p-2"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-1.5">
+                          <span className="font-mono text-[11px] font-semibold text-slate-500">
+                            {sec.section_code}
+                          </span>
+                          <span className="text-xs font-medium text-slate-800 truncate">{sec.section_name}</span>
+                        </div>
+                        <p className="mt-0.5 text-[10px] text-slate-400">
+                          Cost: <span className="font-mono">{formatRM(secCost)}</span>
+                        </p>
+                      </div>
+                      
+                      <div className="flex items-center gap-2 shrink-0">
+                        {/* Role selector dropdown */}
+                        <select
+                          disabled={!isEditable}
+                          value={sec.assigned_role || 'AUDIT_PIC'}
+                          onChange={(e) =>
+                            onChangeSectionRole(
+                              sec.section_code,
+                              e.target.value as AuditSection['assigned_role']
+                            )
+                          }
+                          aria-label={`${sec.section_name} assigned role`}
+                          className="rounded border border-slate-300 bg-white px-2 py-1 text-[11px] font-medium text-slate-700 disabled:bg-slate-50 focus:border-[#1E3A5F] focus:outline-none"
+                        >
+                          <option value="AUDIT_PIC">PIC (RM 45)</option>
+                          <option value="SUPERVISOR">Supervisor (RM 55)</option>
+                          <option value="AUDIT_MANAGER">Manager (RM 65)</option>
+                          <option value="AUDIT_PARTNER">Partner (RM 75)</option>
+                        </select>
+
+                        {isEditable ? (
+                          <input
+                            type="number"
+                            min={0}
+                            step={0.5}
+                            value={sec.planned_hours}
+                            onChange={(e) => handleHourInput(sec.section_code, e.target.value)}
+                            aria-label={`${sec.section_name} planned hours`}
+                            className="w-16 rounded border border-slate-300 bg-white px-2 py-1 text-right font-mono text-xs text-slate-900 tabular-nums focus:border-[#1E3A5F] focus:outline-none focus:ring-1 focus:ring-[#1E3A5F]"
+                          />
+                        ) : (
+                          <span className="w-12 text-right font-mono text-xs font-medium text-slate-900 tabular-nums">
+                            {sec.planned_hours.toFixed(1)}
+                          </span>
+                        )}
+                        <span className="text-[11px] text-slate-400">hrs</span>
+                      </div>
                     </div>
-                    <div className="flex items-center gap-2 shrink-0">
-                      {isEditable ? (
-                        <input
-                          type="number"
-                          min={0}
-                          step={0.5}
-                          value={sec.planned_hours}
-                          onChange={(e) => handleHourInput(sec.section_code, e.target.value)}
-                          aria-label={`${sec.section_name} planned hours`}
-                          className="w-20 rounded border border-slate-300 bg-white px-2 py-1 text-right font-mono text-xs text-slate-900 tabular-nums focus:border-[#1E3A5F] focus:outline-none focus:ring-1 focus:ring-[#1E3A5F]"
-                        />
-                      ) : (
-                        <span className="w-16 text-right font-mono text-xs font-medium text-slate-900 tabular-nums">
-                          {sec.planned_hours.toFixed(1)}
-                        </span>
-                      )}
-                      <span className="text-[11px] text-slate-400">hrs</span>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           );

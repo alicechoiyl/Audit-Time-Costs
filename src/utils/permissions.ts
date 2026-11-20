@@ -12,32 +12,45 @@ export interface EngagementAccess {
   accessModeLabel: string;
 }
 
-/**
- * Enforces the Department RBAC matrix and "My Related Jobs" query rule:
- * - Audit Manager & Audit Partner: See all engagements across the department.
- * - Audit PICs & Supervisors: See ONLY engagements where:
- *   1. logged_in_email == assigned_pic_email (all statuses: Draft, Pending, Approved)
- *   2. OR status === "APPROVED_ACTIVE" AND (logged_in_email == team_supervisor_email OR logged_in_email == reviewer_email).
- */
 export function evaluateEngagementAccess(
   user: StaffMember,
   engagement: AuditEngagement
 ): EngagementAccess {
+  const userId = user.id;
   const userEmail = user.email.toLowerCase();
-  const picEmail = engagement.team_assignment.pic_email?.toLowerCase() ?? '';
-  const supEmail = engagement.team_assignment.supervisor_email?.toLowerCase() ?? '';
-  const reviewerEmail = engagement.team_assignment.reviewer_email?.toLowerCase() ?? '';
-
-  const isOwnerPic = picEmail === userEmail || engagement.team_assignment.pic_id === user.id;
-  const isAssignedSupervisor = supEmail === userEmail;
-  const isAssignedReviewer = reviewerEmail === userEmail;
-  const isApproved = engagement.status === 'APPROVED_ACTIVE';
   const status = engagement.status;
+  const isApproved = status === 'APPROVED_ACTIVE';
+
+  const ta = engagement.team_assignment;
+  const selectedPics = ta.selected_pic_ids ?? (ta.pic_id ? [ta.pic_id] : []);
+  const selectedSupervisors = ta.selected_supervisor_ids ?? (ta.supervisor_id ? [ta.supervisor_id] : []);
+
+  const isSelectedPic =
+    selectedPics.includes(userId) ||
+    (ta.pic_email && ta.pic_email.toLowerCase() === userEmail);
+  const isSelectedSupervisor =
+    selectedSupervisors.includes(userId) ||
+    (ta.supervisor_email && ta.supervisor_email.toLowerCase() === userEmail);
+
+  if (user.role === 'SYSTEM_ADMIN') {
+    return {
+      canView: true,
+      canEditDraft: status === 'DRAFT',
+      canSubmitToManager: status === 'DRAFT',
+      canManagerReview: status === 'PENDING_MANAGER',
+      canPartnerReview: status === 'PENDING_PARTNER',
+      canManageFirstExtension: isApproved,
+      canManageSecondExtension: isApproved,
+      canViewFeeLetter: isApproved,
+      accessModeLabel: 'System Admin Oversight',
+    };
+  }
 
   if (user.role === 'AUDIT_MANAGER') {
     const canReview = status === 'PENDING_MANAGER';
+    const canView = status === 'PENDING_MANAGER' || status === 'PENDING_PARTNER' || isApproved;
     return {
-      canView: status !== 'DRAFT',
+      canView,
       canEditDraft: false,
       canSubmitToManager: false,
       canManagerReview: canReview,
@@ -45,14 +58,15 @@ export function evaluateEngagementAccess(
       canManageFirstExtension: isApproved,
       canManageSecondExtension: false,
       canViewFeeLetter: isApproved,
-      accessModeLabel: canReview ? '1st-Level Manager Review' : 'Manager Read-Only',
+      accessModeLabel: canReview ? '1st-Level Manager Review' : 'Manager Auto-Included View',
     };
   }
 
   if (user.role === 'AUDIT_PARTNER') {
     const canReview = status === 'PENDING_PARTNER';
+    const canView = status === 'PENDING_PARTNER' || isApproved;
     return {
-      canView: status === 'PENDING_PARTNER' || isApproved,
+      canView,
       canEditDraft: false,
       canSubmitToManager: false,
       canManagerReview: false,
@@ -60,46 +74,68 @@ export function evaluateEngagementAccess(
       canManageFirstExtension: false,
       canManageSecondExtension: isApproved,
       canViewFeeLetter: isApproved,
-      accessModeLabel: canReview ? '2nd-Level Partner Pricing Desk' : 'Partner Read-Only',
+      accessModeLabel: canReview ? '2nd-Level Partner Pricing Desk' : 'Partner Auto-Included View',
     };
   }
 
-  // AUDIT_PIC or SUPERVISOR
-  if (isOwnerPic) {
-    const isDraft = status === 'DRAFT';
-    return {
-      canView: true,
-      canEditDraft: isDraft,
-      canSubmitToManager: isDraft,
-      canManagerReview: false,
-      canPartnerReview: false,
-      canManageFirstExtension: false,
-      canManageSecondExtension: false,
-      canViewFeeLetter: false,
-      accessModeLabel: isDraft ? 'PIC Draft Editor' : 'PIC Read-Only',
-    };
+  // AUDIT_PIC
+  if (user.role === 'AUDIT_PIC') {
+    if (isSelectedPic) {
+      const isDraft = status === 'DRAFT';
+      return {
+        canView: true,
+        canEditDraft: isDraft,
+        canSubmitToManager: isDraft,
+        canManagerReview: false,
+        canPartnerReview: false,
+        canManageFirstExtension: false,
+        canManageSecondExtension: false,
+        canViewFeeLetter: false,
+        accessModeLabel: isDraft ? 'PIC Draft Editor' : 'PIC Read-Only',
+      };
+    }
+    return denyAll();
   }
 
-  // If assigned as Team Supervisor or Reviewer, only viewable when APPROVED_ACTIVE
-  if ((isAssignedSupervisor || isAssignedReviewer) && isApproved) {
-    return {
-      canView: true,
-      canEditDraft: false,
-      canSubmitToManager: false,
-      canManagerReview: false,
-      canPartnerReview: false,
-      canManageFirstExtension: false,
-      canManageSecondExtension: false,
-      canViewFeeLetter: true,
-      accessModeLabel: isAssignedSupervisor ? 'Supervisor Read-Only Viewer' : 'Reviewer Read-Only Viewer',
-    };
+  // SUPERVISOR
+  if (user.role === 'SUPERVISOR') {
+    // If acting as a PIC on the job
+    if (isSelectedPic) {
+      const isDraft = status === 'DRAFT';
+      return {
+        canView: true,
+        canEditDraft: isDraft,
+        canSubmitToManager: isDraft,
+        canManagerReview: false,
+        canPartnerReview: false,
+        canManageFirstExtension: false,
+        canManageSecondExtension: false,
+        canViewFeeLetter: false,
+        accessModeLabel: isDraft ? 'Supervisor (PIC) Draft Editor' : 'Supervisor (PIC) Read-Only',
+      };
+    }
+    // If assigned as Team Supervisor
+    if (isSelectedSupervisor && isApproved) {
+      return {
+        canView: true,
+        canEditDraft: false,
+        canSubmitToManager: false,
+        canManagerReview: false,
+        canPartnerReview: false,
+        canManageFirstExtension: false,
+        canManageSecondExtension: false,
+        canViewFeeLetter: true,
+        accessModeLabel: 'Supervisor Read-Only Viewer',
+      };
+    }
+    return denyAll();
   }
 
   return denyAll();
 }
 
 export function canUserCreateEngagement(user: StaffMember): boolean {
-  return user.role === 'AUDIT_PIC' || user.role === 'SUPERVISOR';
+  return user.role === 'AUDIT_PIC' || user.role === 'SUPERVISOR' || user.role === 'SYSTEM_ADMIN';
 }
 
 export function getVisibleEngagements(
@@ -114,14 +150,16 @@ export function countLockedSupervisorJobs(
   engagements: AuditEngagement[]
 ): number {
   if (user.role !== 'SUPERVISOR') return 0;
+  const userId = user.id;
   const userEmail = user.email.toLowerCase();
-  return engagements.filter(
-    (eng) =>
-      (eng.team_assignment.supervisor_email?.toLowerCase() === userEmail ||
-        eng.team_assignment.reviewer_email?.toLowerCase() === userEmail) &&
-      eng.team_assignment.pic_email?.toLowerCase() !== userEmail &&
-      eng.status !== 'APPROVED_ACTIVE'
-  ).length;
+  return engagements.filter((eng) => {
+    const ta = eng.team_assignment;
+    const supIds = ta.selected_supervisor_ids ?? (ta.supervisor_id ? [ta.supervisor_id] : []);
+    const picIds = ta.selected_pic_ids ?? (ta.pic_id ? [ta.pic_id] : []);
+    const isSup = supIds.includes(userId) || (ta.supervisor_email?.toLowerCase() === userEmail);
+    const isPic = picIds.includes(userId) || (ta.pic_email?.toLowerCase() === userEmail);
+    return isSup && !isPic && eng.status !== 'APPROVED_ACTIVE';
+  }).length;
 }
 
 function denyAll(): EngagementAccess {

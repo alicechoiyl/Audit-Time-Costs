@@ -1,12 +1,22 @@
-export type UserRole = 'AUDIT_PIC' | 'SUPERVISOR' | 'AUDIT_MANAGER' | 'AUDIT_PARTNER';
+export type UserRole =
+  | 'SYSTEM_ADMIN'
+  | 'AUDIT_PARTNER'
+  | 'AUDIT_MANAGER'
+  | 'SUPERVISOR'
+  | 'AUDIT_PIC';
 
 export interface StaffMember {
   id: string;
   name: string;
   title: string;
-  role: UserRole;
+  role: UserRole | null;
   supervisorId: string | null;
   email: string;
+  password_hash?: string;
+  password_salt?: string;
+  must_change_password?: boolean;
+  is_active: boolean;
+  account_status?: 'PENDING_APPROVAL' | 'ACTIVE' | 'INACTIVE';
 }
 
 export type EngagementStatus =
@@ -29,6 +39,7 @@ export interface AuditSection {
   category: SectionCategory;
   section_name: string;
   planned_hours: number;
+  assigned_role: 'AUDIT_PIC' | 'SUPERVISOR' | 'AUDIT_MANAGER' | 'AUDIT_PARTNER';
 }
 
 export interface EngagementNotification {
@@ -63,20 +74,26 @@ export interface AuditEngagement {
     industry: string;
   };
   team_assignment: {
-    pic_id: string;
-    pic_name: string;
-    pic_email: string;
-    pic_role: 'AUDIT_PIC' | 'SUPERVISOR';
-    supervisor_id: string | null;
-    supervisor_name: string | null;
-    supervisor_email: string | null;
-    reviewer_id: string;
-    reviewer_name: string;
-    reviewer_email: string;
-    manager_id: string;
-    manager_name: string;
-    partner_id: string;
-    partner_name: string;
+    lead_pic_id: string;
+    lead_pic_name: string;
+    lead_pic_email: string;
+    selected_pic_ids: string[];
+    selected_supervisor_ids: string[];
+    manager_id?: string;
+    manager_name?: string;
+    partner_id?: string;
+    partner_name?: string;
+    // legacy support
+    pic_id?: string;
+    pic_name?: string;
+    pic_email?: string;
+    pic_role?: string;
+    supervisor_id?: string | null;
+    supervisor_name?: string | null;
+    supervisor_email?: string | null;
+    reviewer_id?: string;
+    reviewer_name?: string;
+    reviewer_email?: string;
   };
   financials: {
     cy_revenue: number;
@@ -138,6 +155,19 @@ export interface AuditEngagement {
     last_return_note: string;
     last_returned_by: string;
   };
+  documents: EngagementDocument[];
+}
+
+export interface EngagementDocument {
+  id: string;
+  file_name: string;
+  category: 'PY_FINANCIAL_STATEMENTS' | 'CY_FINANCIAL_STATEMENTS' | 'QUOTATION' | 'OTHER';
+  mime_type: string;
+  file_size_bytes: number;
+  data_url: string;
+  uploaded_by_id: string;
+  uploaded_by_name: string;
+  uploaded_at: string;
 }
 
 export interface Rpg7TierBreakdown {
