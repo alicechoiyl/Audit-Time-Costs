@@ -10,7 +10,7 @@ import {
   Lock,
 } from 'lucide-react';
 import type { AuditEngagement, AuditSection, QuotationType, StaffMember } from '../types/audit';
-import { INDUSTRY_OPTIONS } from '../data/roster';
+import { getStoredDepartmentRoster, INDUSTRY_OPTIONS } from '../data/roster';
 import {
   calculateAllowedHours,
   calculateRecommendedDays,
@@ -84,6 +84,16 @@ export const EngagementWorkspace: React.FC<EngagementWorkspaceProps> = ({
 
   const [showLetterModal, setShowLetterModal] = useState(false);
 
+  const currentRoster = getStoredDepartmentRoster();
+  // Eligible staff for PIC dropdown
+  const eligiblePics = currentRoster.filter(
+    (s: StaffMember) => s.role === 'AUDIT_PIC' || s.role === 'SUPERVISOR' || s.role === 'AUDIT_MANAGER' || s.role === 'AUDIT_PARTNER'
+  );
+  // Eligible supervisors & reviewers
+  const supervisorsList = currentRoster.filter(
+    (s: StaffMember) => s.role === 'SUPERVISOR' || s.role === 'AUDIT_MANAGER' || s.role === 'AUDIT_PARTNER'
+  );
+
   // Derived calculations
   const revYoY = calculateYoYPercent(
     engagement.financials.cy_revenue,
@@ -127,6 +137,15 @@ export const EngagementWorkspace: React.FC<EngagementWorkspaceProps> = ({
   }
   if (!engagement.client_info.fye_date) {
     validationErrors.push('Financial Year End (FYE) date is required.');
+  }
+  if (!engagement.team_assignment.pic_id) {
+    validationErrors.push('Audit PIC assignment is required.');
+  }
+  if (!engagement.team_assignment.supervisor_id) {
+    validationErrors.push('Team Supervisor assignment is required.');
+  }
+  if (!engagement.team_assignment.reviewer_id) {
+    validationErrors.push('Reviewer assignment is required.');
   }
   if (engagement.prior_fees.py_audit_fee <= 0) {
     validationErrors.push('Previous Year Audit Fee must be greater than RM 0.');
@@ -176,7 +195,12 @@ export const EngagementWorkspace: React.FC<EngagementWorkspaceProps> = ({
 
   const handlePyAuditFeeChange = (val: number) => {
     const safeVal = Math.max(0, Number.isFinite(val) ? val : 0);
-    const newCap = calculateAllowedHours(safeVal, engagement.time_budget.charge_out_rate || DEFAULT_CHARGE_OUT_RATE);
+    const newCap = calculateAllowedHours(
+      safeVal,
+      engagement.prior_fees.py_tax_fee,
+      engagement.prior_fees.tax_handled_by_firm,
+      engagement.time_budget.charge_out_rate || DEFAULT_CHARGE_OUT_RATE
+    );
     patchEngagement((prev) => ({
       ...prev,
       prior_fees: {
@@ -262,14 +286,13 @@ export const EngagementWorkspace: React.FC<EngagementWorkspaceProps> = ({
             <span aria-hidden="true">·</span>
             <span>FYE {formatDateDisplay(engagement.client_info.fye_date)}</span>
             <span aria-hidden="true">·</span>
-            <span>
-              PIC: {engagement.team_assignment.pic_name}
-              {engagement.team_assignment.pic_role === 'SUPERVISOR' ? ' (Supervisor-as-PIC)' : ''}
-            </span>
-            {engagement.team_assignment.supervisor_name && (
+            <span>PIC: {engagement.team_assignment.pic_name}</span>
+            {engagement.status === 'APPROVED_ACTIVE' && (
               <>
                 <span aria-hidden="true">·</span>
-                <span>Supervisor: {engagement.team_assignment.supervisor_name}</span>
+                <span>Sup: {engagement.team_assignment.supervisor_name}</span>
+                <span aria-hidden="true">·</span>
+                <span>Reviewer: {engagement.team_assignment.reviewer_name}</span>
               </>
             )}
             <span aria-hidden="true">·</span>
@@ -329,14 +352,13 @@ export const EngagementWorkspace: React.FC<EngagementWorkspaceProps> = ({
         </div>
       </div>
 
-      {/* Supervisor Read-Only Banner */}
-      {access.accessModeLabel === 'Supervisor Read-Only Viewer' && (
+      {/* Supervisor/Reviewer Read-Only Banner */}
+      {(access.accessModeLabel.includes('Supervisor Read-Only') || access.accessModeLabel.includes('Reviewer Read-Only')) && (
         <div className="flex items-center justify-between gap-3 rounded-lg border border-emerald-200 bg-emerald-50/60 px-5 py-3 text-xs text-emerald-900">
           <div className="flex items-center gap-2">
             <Lock className="h-4 w-4 text-emerald-700 shrink-0" />
             <span>
-              <strong className="font-semibold">Supervisor Read-Only Viewer Unlocked:</strong>{' '}
-              Both Audit Manager and Audit Partner have approved this engagement. You can monitor approved section hours, milestones, and decided fees below.
+              <strong className="font-semibold">Read-Only Viewer Unlocked:</strong> Both Audit Manager and Audit Partner have approved this engagement. You can monitor approved section hours, milestones, and decided fees.
             </span>
           </div>
         </div>
@@ -352,7 +374,7 @@ export const EngagementWorkspace: React.FC<EngagementWorkspaceProps> = ({
         </div>
       )}
 
-      {/* Approved Fee Decision Summary Banner (Visible to all permitted viewers once APPROVED_ACTIVE) */}
+      {/* Approved Fee Decision Summary Banner */}
       {engagement.status === 'APPROVED_ACTIVE' && (
         <div className="rounded-lg border border-slate-200 bg-white">
           <div className="grid grid-cols-1 divide-y divide-slate-200 sm:grid-cols-2 lg:grid-cols-4 lg:divide-x lg:divide-y-0">
@@ -400,7 +422,7 @@ export const EngagementWorkspace: React.FC<EngagementWorkspaceProps> = ({
         </div>
       )}
 
-      {/* Partner Pricing Desk (Top Priority for Partner on PENDING_PARTNER, also accessible on APPROVED_ACTIVE) */}
+      {/* Partner Pricing Desk */}
       {(currentUser.role === 'AUDIT_PARTNER' ||
         (currentUser.role === 'AUDIT_MANAGER' && engagement.status === 'APPROVED_ACTIVE')) && (
         <PartnerPricingDesk
@@ -421,7 +443,7 @@ export const EngagementWorkspace: React.FC<EngagementWorkspaceProps> = ({
                 1st-Level Audit Manager Review
               </h3>
               <p className="text-xs text-slate-500">
-                Verify CY/PY financial growth, quotation terms, milestone schedule, and 26-section hours ({engagement.time_budget.total_planned_hours.toFixed(1)} / {engagement.time_budget.allowed_hours_cap.toFixed(1)} hrs) before forwarding to Audit Partner.
+                Verify CY/PY financial growth, quotation terms, team assignment, milestone schedule, and 26-section hours ({engagement.time_budget.total_planned_hours.toFixed(1)} / {engagement.time_budget.allowed_hours_cap.toFixed(1)} hrs) before forwarding to Audit Partner.
               </p>
             </div>
           </div>
@@ -504,20 +526,113 @@ export const EngagementWorkspace: React.FC<EngagementWorkspaceProps> = ({
         </div>
       )}
 
-      {/* SECTION 1: Client Profile & Comparative Financials (CY vs PY) */}
+      {/* SECTION 01: Team Assignment & Client Financials */}
       <section className="rounded-lg border border-slate-200 bg-white">
         <div className="border-b border-slate-200 px-6 py-4">
           <h2 className="text-base font-semibold text-slate-900">
-            01. Client Profile &amp; Comparative Financials (CY vs PY)
+            01. Team Assignment, Client Profile &amp; Comparative Financials (CY vs PY)
           </h2>
           <p className="text-xs text-slate-500">
-            Auto-computes YoY variance and MIA RPG 7 progressive fee benchmarks. Jumps above 20% are flagged as materiality growth indicators.
+            Select team roles, enter comparative financials, and review YoY % variance and MIA RPG 7 progressive fee benchmarks.
           </p>
         </div>
 
         <div className="p-6 space-y-6">
+          {/* Team Assignment Selectors */}
+          <div className="grid grid-cols-1 gap-4 rounded-lg border border-slate-200 bg-slate-50/70 p-4 md:grid-cols-3">
+            <div>
+              <label className="block text-xs font-medium text-slate-700">Audit PIC *</label>
+               <select
+                disabled={!isEditable}
+                value={engagement.team_assignment.pic_id}
+                onChange={(e) => {
+                  const staff = eligiblePics.find((s: StaffMember) => s.id === e.target.value);
+                  if (staff) {
+                    patchEngagement((prev) => ({
+                      ...prev,
+                      team_assignment: {
+                        ...prev.team_assignment,
+                        pic_id: staff.id,
+                        pic_name: staff.name,
+                        pic_email: staff.email,
+                        pic_role: staff.role === 'SUPERVISOR' ? 'SUPERVISOR' : 'AUDIT_PIC',
+                      },
+                    }));
+                  }
+                }}
+                className="mt-1.5 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-xs text-slate-900 disabled:bg-slate-50 focus:border-[#1E3A5F] focus:outline-none"
+              >
+                {eligiblePics.map((p: StaffMember) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name} ({p.title})
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-slate-700">Team Supervisor *</label>
+              <select
+                disabled={!isEditable}
+                value={engagement.team_assignment.supervisor_id || ''}
+                onChange={(e) => {
+                  const staff = supervisorsList.find((s: StaffMember) => s.id === e.target.value);
+                  if (staff) {
+                    patchEngagement((prev) => ({
+                      ...prev,
+                      team_assignment: {
+                        ...prev.team_assignment,
+                        supervisor_id: staff.id,
+                        supervisor_name: staff.name,
+                        supervisor_email: staff.email,
+                      },
+                    }));
+                  }
+                }}
+                className="mt-1.5 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-xs text-slate-900 disabled:bg-slate-50 focus:border-[#1E3A5F] focus:outline-none"
+              >
+                <option value="">Select Supervisor...</option>
+                {supervisorsList.map((s: StaffMember) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name} ({s.title})
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-slate-700">Reviewer *</label>
+              <select
+                disabled={!isEditable}
+                value={engagement.team_assignment.reviewer_id || ''}
+                onChange={(e) => {
+                  const staff = supervisorsList.find((s: StaffMember) => s.id === e.target.value);
+                  if (staff) {
+                    patchEngagement((prev) => ({
+                      ...prev,
+                      team_assignment: {
+                        ...prev.team_assignment,
+                        reviewer_id: staff.id,
+                        reviewer_name: staff.name,
+                        reviewer_email: staff.email,
+                      },
+                    }));
+                  }
+                }}
+                className="mt-1.5 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-xs text-slate-900 disabled:bg-slate-50 focus:border-[#1E3A5F] focus:outline-none"
+              >
+                <option value="">Select Reviewer...</option>
+                {supervisorsList.map((s: StaffMember) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name} ({s.title})
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
           {/* Client Metadata Row */}
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
             <div className="md:col-span-2">
               <label className="block text-xs font-medium text-slate-700">Client Name *</label>
               <input
@@ -530,8 +645,8 @@ export const EngagementWorkspace: React.FC<EngagementWorkspaceProps> = ({
                     client_info: { ...prev.client_info, client_name: e.target.value },
                   }))
                 }
-                placeholder="e.g., WW Global Success Sdn. Bhd."
-                className="mt-1.5 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 disabled:bg-slate-50 disabled:text-slate-600 focus:border-[#1E3A5F] focus:outline-none focus:ring-1 focus:ring-[#1E3A5F]"
+                placeholder="e.g., WW GLOBAL SUCCESS SDN. BHD."
+                className="mt-1.5 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 disabled:bg-slate-50 focus:border-[#1E3A5F] focus:outline-none"
               />
             </div>
 
@@ -549,11 +664,11 @@ export const EngagementWorkspace: React.FC<EngagementWorkspaceProps> = ({
                     client_info: { ...prev.client_info, fye_date: e.target.value },
                   }))
                 }
-                className="mt-1.5 w-full rounded-md border border-slate-300 bg-white px-3 py-2 font-mono text-sm text-slate-900 disabled:bg-slate-50 disabled:text-slate-600 focus:border-[#1E3A5F] focus:outline-none focus:ring-1 focus:ring-[#1E3A5F]"
+                className="mt-1.5 w-full rounded-md border border-slate-300 bg-white px-3 py-2 font-mono text-sm text-slate-900 disabled:bg-slate-50"
               />
             </div>
 
-            <div>
+            <div className="md:col-span-3">
               <label className="block text-xs font-medium text-slate-700">
                 Industry Classification *
               </label>
@@ -566,7 +681,7 @@ export const EngagementWorkspace: React.FC<EngagementWorkspaceProps> = ({
                     client_info: { ...prev.client_info, industry: e.target.value },
                   }))
                 }
-                className="mt-1.5 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 disabled:bg-slate-50 disabled:text-slate-600 focus:border-[#1E3A5F] focus:outline-none focus:ring-1 focus:ring-[#1E3A5F]"
+                className="mt-1.5 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 disabled:bg-slate-50"
               >
                 {INDUSTRY_OPTIONS.map((ind) => (
                   <option key={ind} value={ind}>
@@ -608,7 +723,7 @@ export const EngagementWorkspace: React.FC<EngagementWorkspaceProps> = ({
                             },
                           }))
                         }
-                        className="w-40 rounded border border-slate-300 bg-white px-2.5 py-1.5 text-right font-mono text-xs text-slate-900 tabular-nums focus:border-[#1E3A5F] focus:outline-none"
+                        className="w-40 rounded border border-slate-300 bg-white px-2.5 py-1.5 text-right font-mono text-xs text-slate-900 tabular-nums"
                       />
                     ) : (
                       <span className="font-mono text-xs text-slate-700 tabular-nums">
@@ -631,7 +746,7 @@ export const EngagementWorkspace: React.FC<EngagementWorkspaceProps> = ({
                             },
                           }))
                         }
-                        className="w-40 rounded border border-slate-300 bg-white px-2.5 py-1.5 text-right font-mono text-xs font-medium text-slate-900 tabular-nums focus:border-[#1E3A5F] focus:outline-none"
+                        className="w-40 rounded border border-slate-300 bg-white px-2.5 py-1.5 text-right font-mono text-xs font-medium text-slate-900 tabular-nums"
                       />
                     ) : (
                       <span className="font-mono text-xs font-semibold text-slate-900 tabular-nums">
@@ -677,7 +792,7 @@ export const EngagementWorkspace: React.FC<EngagementWorkspaceProps> = ({
                             },
                           }))
                         }
-                        className="w-40 rounded border border-slate-300 bg-white px-2.5 py-1.5 text-right font-mono text-xs text-slate-900 tabular-nums focus:border-[#1E3A5F] focus:outline-none"
+                        className="w-40 rounded border border-slate-300 bg-white px-2.5 py-1.5 text-right font-mono text-xs text-slate-900 tabular-nums"
                       />
                     ) : (
                       <span className="font-mono text-xs text-slate-700 tabular-nums">
@@ -700,7 +815,7 @@ export const EngagementWorkspace: React.FC<EngagementWorkspaceProps> = ({
                             },
                           }))
                         }
-                        className="w-40 rounded border border-slate-300 bg-white px-2.5 py-1.5 text-right font-mono text-xs font-medium text-slate-900 tabular-nums focus:border-[#1E3A5F] focus:outline-none"
+                        className="w-40 rounded border border-slate-300 bg-white px-2.5 py-1.5 text-right font-mono text-xs font-medium text-slate-900 tabular-nums"
                       />
                     ) : (
                       <span className="font-mono text-xs font-semibold text-slate-900 tabular-nums">
@@ -744,7 +859,7 @@ export const EngagementWorkspace: React.FC<EngagementWorkspaceProps> = ({
                             },
                           }))
                         }
-                        className="w-40 rounded border border-slate-300 bg-white px-2.5 py-1.5 text-right font-mono text-xs text-slate-900 tabular-nums focus:border-[#1E3A5F] focus:outline-none"
+                        className="w-40 rounded border border-slate-300 bg-white px-2.5 py-1.5 text-right font-mono text-xs text-slate-900 tabular-nums"
                       />
                     ) : (
                       <span className="font-mono text-xs text-slate-700 tabular-nums">
@@ -767,7 +882,7 @@ export const EngagementWorkspace: React.FC<EngagementWorkspaceProps> = ({
                             },
                           }))
                         }
-                        className="w-40 rounded border border-slate-300 bg-white px-2.5 py-1.5 text-right font-mono text-xs font-medium text-slate-900 tabular-nums focus:border-[#1E3A5F] focus:outline-none"
+                        className="w-40 rounded border border-slate-300 bg-white px-2.5 py-1.5 text-right font-mono text-xs font-medium text-slate-900 tabular-nums"
                       />
                     ) : (
                       <span className="font-mono text-xs font-semibold text-slate-900 tabular-nums">
@@ -789,7 +904,6 @@ export const EngagementWorkspace: React.FC<EngagementWorkspaceProps> = ({
                   </td>
                   <td className="px-3 py-3 text-right font-mono text-xs font-semibold text-slate-900 tabular-nums">
                     {formatRM(rpg7.expenses.recommendedFee)}
-                    {rpg7.expenses.isNegotiableFloor ? ' (Floor)' : ''}
                   </td>
                 </tr>
               </tbody>
@@ -798,14 +912,14 @@ export const EngagementWorkspace: React.FC<EngagementWorkspaceProps> = ({
         </div>
       </section>
 
-      {/* SECTION 2: Prior-Year Fees (Tax Isolation) & Multi-Mode Quotation Tracking */}
+      {/* SECTION 02: Prior-Year Fees & Quotation Tracking */}
       <section className="rounded-lg border border-slate-200 bg-white">
         <div className="border-b border-slate-200 px-6 py-4">
           <h2 className="text-base font-semibold text-slate-900">
             02. Prior-Year Fees &amp; Client Quotation Tracking
           </h2>
           <p className="text-xs text-slate-500">
-            Audit fieldwork hours are derived strictly from the Prior-Year Audit Fee; tax fees are isolated so they never inflate audit hours.
+            Configure fee pool allocation for allowed hours and track client quotation status.
           </p>
         </div>
 
@@ -825,22 +939,15 @@ export const EngagementWorkspace: React.FC<EngagementWorkspaceProps> = ({
                 disabled={!isEditable}
                 value={engagement.prior_fees.py_audit_fee}
                 onChange={(e) => handlePyAuditFeeChange(Number(e.target.value))}
-                className="mt-1.5 w-full rounded-md border border-slate-300 bg-white px-3 py-2 font-mono text-sm text-slate-900 tabular-nums disabled:bg-slate-50 disabled:text-slate-600 focus:border-[#1E3A5F] focus:outline-none focus:ring-1 focus:ring-[#1E3A5F]"
+                className="mt-1.5 w-full rounded-md border border-slate-300 bg-white px-3 py-2 font-mono text-sm text-slate-900 tabular-nums disabled:bg-slate-50"
               />
-              <p className="mt-1 font-mono text-xs text-slate-500 tabular-nums">
-                Derives Allowed Cap: {formatRM(engagement.prior_fees.py_audit_fee)} × 70% ÷ RM{' '}
-                {engagement.time_budget.charge_out_rate}/hr ={' '}
-                <span className="font-semibold text-slate-800">
-                  {engagement.time_budget.allowed_hours_cap.toFixed(1)} hrs
-                </span>
-              </p>
             </div>
 
             <div className="flex items-center justify-between border-t border-slate-100 pt-4">
               <div>
                 <p className="text-xs font-medium text-slate-800">Tax Handled by Firm?</p>
                 <p className="text-xs text-slate-500">
-                  If No, PY Tax Fee is locked at RM 0 (Not Handled by Firm).
+                  If Yes, include PY Tax Fee in fee pool calculation.
                 </p>
               </div>
               <div className="flex items-center gap-1 rounded-md bg-slate-100 p-0.5">
@@ -852,7 +959,7 @@ export const EngagementWorkspace: React.FC<EngagementWorkspaceProps> = ({
                     engagement.prior_fees.tax_handled_by_firm
                       ? 'bg-white text-slate-900 shadow-xs'
                       : 'text-slate-500 hover:text-slate-900'
-                  } disabled:opacity-60`}
+                  }`}
                 >
                   Yes
                 </button>
@@ -864,7 +971,7 @@ export const EngagementWorkspace: React.FC<EngagementWorkspaceProps> = ({
                     !engagement.prior_fees.tax_handled_by_firm
                       ? 'bg-white text-slate-900 shadow-xs'
                       : 'text-slate-500 hover:text-slate-900'
-                  } disabled:opacity-60`}
+                  }`}
                 >
                   No
                 </button>
@@ -882,26 +989,31 @@ export const EngagementWorkspace: React.FC<EngagementWorkspaceProps> = ({
                   step={50}
                   disabled={!isEditable}
                   value={engagement.prior_fees.py_tax_fee}
-                  onChange={(e) =>
+                  onChange={(e) => {
+                    const taxVal = Math.max(0, Number(e.target.value) || 0);
+                    const newCap = calculateAllowedHours(
+                      engagement.prior_fees.py_audit_fee,
+                      taxVal,
+                      true,
+                      engagement.time_budget.charge_out_rate
+                    );
                     patchEngagement((prev) => ({
                       ...prev,
-                      prior_fees: {
-                        ...prev.prior_fees,
-                        py_tax_fee: Math.max(0, Number(e.target.value) || 0),
-                      },
-                    }))
-                  }
-                  className="mt-1.5 w-full rounded-md border border-slate-300 bg-white px-3 py-2 font-mono text-sm text-slate-900 tabular-nums disabled:bg-slate-50 disabled:text-slate-600 focus:border-[#1E3A5F] focus:outline-none focus:ring-1 focus:ring-[#1E3A5F]"
+                      prior_fees: { ...prev.prior_fees, py_tax_fee: taxVal },
+                      time_budget: { ...prev.time_budget, allowed_hours_cap: newCap },
+                    }));
+                  }}
+                  className="mt-1.5 w-full rounded-md border border-slate-300 bg-white px-3 py-2 font-mono text-sm text-slate-900 tabular-nums disabled:bg-slate-50"
                 />
               </div>
             ) : (
               <div className="rounded-md border border-slate-200 bg-slate-50 px-3.5 py-2.5 text-xs text-slate-600">
-                Previous Year Tax Fee: <span className="font-mono font-semibold">RM 0</span> — Not Handled by Firm
+                Previous Year Tax Fee: <span className="font-mono font-semibold">N/A</span> (External)
               </div>
             )}
           </div>
 
-          {/* Right: Multi-Mode Quotation Tracking */}
+          {/* Right: Quotation Tracking */}
           <div className="p-6 space-y-4">
             <div className="flex items-center justify-between gap-2">
               <div>
@@ -921,7 +1033,7 @@ export const EngagementWorkspace: React.FC<EngagementWorkspaceProps> = ({
                     !engagement.quotation.quotation_issued
                       ? 'bg-white text-slate-900 shadow-xs'
                       : 'text-slate-500 hover:text-slate-900'
-                  } disabled:opacity-60`}
+                  }`}
                 >
                   No
                 </button>
@@ -933,7 +1045,7 @@ export const EngagementWorkspace: React.FC<EngagementWorkspaceProps> = ({
                     engagement.quotation.quotation_issued
                       ? 'bg-white text-slate-900 shadow-xs'
                       : 'text-slate-500 hover:text-slate-900'
-                  } disabled:opacity-60`}
+                  }`}
                 >
                   Yes
                 </button>
@@ -946,7 +1058,6 @@ export const EngagementWorkspace: React.FC<EngagementWorkspaceProps> = ({
               </p>
             ) : (
               <div className="space-y-4">
-                {/* Mode Selector */}
                 <div className="grid grid-cols-2 gap-2">
                   <button
                     type="button"
@@ -955,13 +1066,10 @@ export const EngagementWorkspace: React.FC<EngagementWorkspaceProps> = ({
                     className={`rounded-md border px-3 py-2 text-left text-xs transition-colors ${
                       engagement.quotation.quotation_type === 'FIXED'
                         ? 'border-[#1E3A5F] bg-slate-50 font-semibold text-slate-900'
-                        : 'border-slate-200 text-slate-600 hover:bg-slate-50'
-                    } disabled:opacity-70`}
+                        : 'border-slate-200 text-slate-600'
+                    }`}
                   >
                     Fixed Quotation
-                    <span className="block font-normal text-[11px] text-slate-500">
-                      Committed binding client quote
-                    </span>
                   </button>
                   <button
                     type="button"
@@ -970,22 +1078,17 @@ export const EngagementWorkspace: React.FC<EngagementWorkspaceProps> = ({
                     className={`rounded-md border px-3 py-2 text-left text-xs transition-colors ${
                       engagement.quotation.quotation_type === 'GENERAL_RANGE'
                         ? 'border-[#1E3A5F] bg-slate-50 font-semibold text-slate-900'
-                        : 'border-slate-200 text-slate-600 hover:bg-slate-50'
-                    } disabled:opacity-70`}
+                        : 'border-slate-200 text-slate-600'
+                    }`}
                   >
                     General Range (RM xx ~ RM xx)
-                    <span className="block font-normal text-[11px] text-amber-700">
-                      REFERENCE ONLY — Non-Binding
-                    </span>
+                    <span className="block font-normal text-[10px] text-amber-700">REFERENCE ONLY</span>
                   </button>
                 </div>
 
-                {/* Ref & Date */}
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className="block text-xs font-medium text-slate-700">
-                      Quotation Ref No.
-                    </label>
+                    <label className="block text-xs font-medium text-slate-700">Ref No.</label>
                     <input
                       type="text"
                       disabled={!isEditable}
@@ -996,14 +1099,12 @@ export const EngagementWorkspace: React.FC<EngagementWorkspaceProps> = ({
                           quotation: { ...prev.quotation, quotation_ref: e.target.value },
                         }))
                       }
-                      placeholder="e.g., QTN/2026/0210"
-                      className="mt-1 w-full rounded-md border border-slate-300 bg-white px-2.5 py-1.5 font-mono text-xs text-slate-900 disabled:bg-slate-50"
+                      placeholder="e.g. QTN/2026/0109"
+                      className="mt-1 w-full rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs"
                     />
                   </div>
                   <div>
-                    <label className="block text-xs font-medium text-slate-700">
-                      Quotation Date
-                    </label>
+                    <label className="block text-xs font-medium text-slate-700">Date</label>
                     <input
                       type="date"
                       disabled={!isEditable}
@@ -1014,7 +1115,7 @@ export const EngagementWorkspace: React.FC<EngagementWorkspaceProps> = ({
                           quotation: { ...prev.quotation, quotation_date: e.target.value },
                         }))
                       }
-                      className="mt-1 w-full rounded-md border border-slate-300 bg-white px-2.5 py-1.5 font-mono text-xs text-slate-900 disabled:bg-slate-50"
+                      className="mt-1 w-full rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs"
                     />
                   </div>
                 </div>
@@ -1023,7 +1124,7 @@ export const EngagementWorkspace: React.FC<EngagementWorkspaceProps> = ({
                   <div className="grid grid-cols-2 gap-3">
                     <div>
                       <label className="block text-xs font-medium text-slate-700">
-                        Quoted CY Audit Fee (RM) *
+                        Quoted Audit Fee (RM) *
                       </label>
                       <input
                         type="number"
@@ -1039,12 +1140,12 @@ export const EngagementWorkspace: React.FC<EngagementWorkspaceProps> = ({
                             },
                           }))
                         }
-                        className="mt-1 w-full rounded-md border border-slate-300 bg-white px-2.5 py-1.5 font-mono text-xs text-slate-900 tabular-nums disabled:bg-slate-50"
+                        className="mt-1 w-full rounded-md border border-slate-300 bg-white px-2.5 py-1.5 font-mono text-xs tabular-nums"
                       />
                     </div>
                     <div>
                       <label className="block text-xs font-medium text-slate-700">
-                        Quoted CY Tax Fee (RM, Optional)
+                        Quoted Tax Fee (RM)
                       </label>
                       <input
                         type="number"
@@ -1056,12 +1157,11 @@ export const EngagementWorkspace: React.FC<EngagementWorkspaceProps> = ({
                             ...prev,
                             quotation: {
                               ...prev.quotation,
-                              tax_included: Number(e.target.value) > 0,
                               fixed_tax_fee: Math.max(0, Number(e.target.value) || 0),
                             },
                           }))
                         }
-                        className="mt-1 w-full rounded-md border border-slate-300 bg-white px-2.5 py-1.5 font-mono text-xs text-slate-900 tabular-nums disabled:bg-slate-50"
+                        className="mt-1 w-full rounded-md border border-slate-300 bg-white px-2.5 py-1.5 font-mono text-xs tabular-nums"
                       />
                     </div>
                   </div>
@@ -1070,51 +1170,86 @@ export const EngagementWorkspace: React.FC<EngagementWorkspaceProps> = ({
                     <div className="grid grid-cols-2 gap-3">
                       <div>
                         <label className="block text-xs font-medium text-slate-700">
-                          Audit Fee Min (RM) *
+                          Audit Fee Min ~ Max (RM) *
                         </label>
-                        <input
-                          type="number"
-                          min={0}
-                          disabled={!isEditable}
-                          value={engagement.quotation.range_audit_min}
-                          onChange={(e) =>
-                            patchEngagement((prev) => ({
-                              ...prev,
-                              quotation: {
-                                ...prev.quotation,
-                                range_audit_min: Math.max(0, Number(e.target.value) || 0),
-                              },
-                            }))
-                          }
-                          className="mt-1 w-full rounded-md border border-slate-300 bg-white px-2.5 py-1.5 font-mono text-xs text-slate-900 tabular-nums disabled:bg-slate-50"
-                        />
+                        <div className="mt-1 grid grid-cols-2 gap-2">
+                          <input
+                            type="number"
+                            placeholder="Min"
+                            disabled={!isEditable}
+                            value={engagement.quotation.range_audit_min}
+                            onChange={(e) =>
+                              patchEngagement((prev) => ({
+                                ...prev,
+                                quotation: {
+                                  ...prev.quotation,
+                                  range_audit_min: Math.max(0, Number(e.target.value) || 0),
+                                },
+                              }))
+                            }
+                            className="w-full rounded border border-slate-300 px-2 py-1 font-mono text-xs tabular-nums"
+                          />
+                          <input
+                            type="number"
+                            placeholder="Max"
+                            disabled={!isEditable}
+                            value={engagement.quotation.range_audit_max}
+                            onChange={(e) =>
+                              patchEngagement((prev) => ({
+                                ...prev,
+                                quotation: {
+                                  ...prev.quotation,
+                                  range_audit_max: Math.max(0, Number(e.target.value) || 0),
+                                },
+                              }))
+                            }
+                            className="w-full rounded border border-slate-300 px-2 py-1 font-mono text-xs tabular-nums"
+                          />
+                        </div>
                       </div>
                       <div>
                         <label className="block text-xs font-medium text-slate-700">
-                          Audit Fee Max (RM) *
+                          Tax Fee Min ~ Max (RM)
                         </label>
-                        <input
-                          type="number"
-                          min={0}
-                          disabled={!isEditable}
-                          value={engagement.quotation.range_audit_max}
-                          onChange={(e) =>
-                            patchEngagement((prev) => ({
-                              ...prev,
-                              quotation: {
-                                ...prev.quotation,
-                                range_audit_max: Math.max(0, Number(e.target.value) || 0),
-                              },
-                            }))
-                          }
-                          className="mt-1 w-full rounded-md border border-slate-300 bg-white px-2.5 py-1.5 font-mono text-xs text-slate-900 tabular-nums disabled:bg-slate-50"
-                        />
+                        <div className="mt-1 grid grid-cols-2 gap-2">
+                          <input
+                            type="number"
+                            placeholder="Min"
+                            disabled={!isEditable}
+                            value={engagement.quotation.range_tax_min}
+                            onChange={(e) =>
+                              patchEngagement((prev) => ({
+                                ...prev,
+                                quotation: {
+                                  ...prev.quotation,
+                                  range_tax_min: Math.max(0, Number(e.target.value) || 0),
+                                },
+                              }))
+                            }
+                            className="w-full rounded border border-slate-300 px-2 py-1 font-mono text-xs tabular-nums"
+                          />
+                          <input
+                            type="number"
+                            placeholder="Max"
+                            disabled={!isEditable}
+                            value={engagement.quotation.range_tax_max}
+                            onChange={(e) =>
+                              patchEngagement((prev) => ({
+                                ...prev,
+                                quotation: {
+                                  ...prev.quotation,
+                                  range_tax_max: Math.max(0, Number(e.target.value) || 0),
+                                },
+                              }))
+                            }
+                            className="w-full rounded border border-slate-300 px-2 py-1 font-mono text-xs tabular-nums"
+                          />
+                        </div>
                       </div>
                     </div>
                     {engagement.quotation.range_audit_max > 0 && (
                       <p className="text-xs text-amber-800">
-                        <strong className="font-semibold">REFERENCE ONLY:</strong> CY RPG 7
-                        Benchmark ({formatRM(rpg7.highestBenchmark.recommendedFee)}) sits{' '}
+                        <strong className="font-semibold">REFERENCE ONLY:</strong> CY RPG 7 Benchmark ({formatRM(rpg7.highestBenchmark.recommendedFee)}) sits{' '}
                         <strong className="font-semibold">
                           {getRangePositionLabel(
                             rpg7.highestBenchmark.recommendedFee,
@@ -1133,7 +1268,7 @@ export const EngagementWorkspace: React.FC<EngagementWorkspaceProps> = ({
         </div>
       </section>
 
-      {/* SECTION 3: Timeline, Milestone Schedule & Extension Controls */}
+      {/* SECTION 03: Timeline & Milestones */}
       <section className="rounded-lg border border-slate-200 bg-white">
         <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-200 px-6 py-4">
           <div>
@@ -1141,7 +1276,7 @@ export const EngagementWorkspace: React.FC<EngagementWorkspaceProps> = ({
               03. Engagement Timeline &amp; Milestone Schedule
             </h2>
             <p className="text-xs text-slate-500">
-              Compares calendar working days against recommended net fieldwork days ((Allowed Hours − 7.0 hrs) ÷ 7.0 hrs/day).
+              Compares working days against recommended net fieldwork days.
             </p>
           </div>
           <div className="flex items-center gap-5 text-xs">
@@ -1157,9 +1292,6 @@ export const EngagementWorkspace: React.FC<EngagementWorkspaceProps> = ({
                 {recommendedDays.toFixed(1)} days
               </span>
             </div>
-            {workingDays > 0 && workingDays < recommendedDays && (
-              <span className="font-medium text-amber-700">Tight schedule</span>
-            )}
           </div>
         </div>
 
@@ -1179,7 +1311,7 @@ export const EngagementWorkspace: React.FC<EngagementWorkspaceProps> = ({
                     schedule: { ...prev.schedule, commencement_date: e.target.value },
                   }))
                 }
-                className="mt-1.5 w-full rounded-md border border-slate-300 bg-white px-3 py-2 font-mono text-sm text-slate-900 disabled:bg-slate-50"
+                className="mt-1.5 w-full rounded-md border border-slate-300 bg-white px-3 py-2 font-mono text-xs text-slate-900 disabled:bg-slate-50"
               />
             </div>
 
@@ -1197,7 +1329,7 @@ export const EngagementWorkspace: React.FC<EngagementWorkspaceProps> = ({
                     schedule: { ...prev.schedule, target_completion_date: e.target.value },
                   }))
                 }
-                className={`mt-1.5 w-full rounded-md border px-3 py-2 font-mono text-sm text-slate-900 disabled:bg-slate-50 ${
+                className={`mt-1.5 w-full rounded-md border px-3 py-2 font-mono text-xs text-slate-900 disabled:bg-slate-50 ${
                   dateInvalid ? 'border-red-500 bg-red-50/40' : 'border-slate-300 bg-white'
                 }`}
               />
@@ -1209,7 +1341,6 @@ export const EngagementWorkspace: React.FC<EngagementWorkspaceProps> = ({
             </div>
           </div>
 
-          {/* 5 Milestones */}
           <div className="border-t border-slate-100 pt-4">
             <p className="mb-3 text-xs font-semibold text-slate-700">Milestone Target Dates</p>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
@@ -1247,7 +1378,6 @@ export const EngagementWorkspace: React.FC<EngagementWorkspaceProps> = ({
             </div>
           </div>
 
-          {/* Extension Management (1st Extension: Audit Manager | 2nd Extension: Audit Partner) */}
           {engagement.status === 'APPROVED_ACTIVE' && (
             <div className="grid grid-cols-1 gap-4 border-t border-slate-200 pt-5 md:grid-cols-2">
               <div className="rounded-md border border-slate-200 bg-slate-50/50 p-4">
@@ -1338,7 +1468,7 @@ export const EngagementWorkspace: React.FC<EngagementWorkspaceProps> = ({
         </div>
       </section>
 
-      {/* SECTION 4: 26-Section Audit Hours Planner */}
+      {/* SECTION 04: 26-Section Audit Hours Planner */}
       <SectionHoursPlanner
         sections={engagement.time_budget.sections}
         allowedHoursCap={engagement.time_budget.allowed_hours_cap}
@@ -1348,7 +1478,7 @@ export const EngagementWorkspace: React.FC<EngagementWorkspaceProps> = ({
         onChangeSections={handleSectionsChange}
       />
 
-      {/* PIC / Supervisor-as-PIC Submit Bar */}
+      {/* PIC Submit Bar */}
       {access.canSubmitToManager && (
         <div className="rounded-lg border border-slate-300 bg-white p-6">
           <div className="flex flex-wrap items-center justify-between gap-4">

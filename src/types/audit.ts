@@ -65,9 +65,14 @@ export interface AuditEngagement {
   team_assignment: {
     pic_id: string;
     pic_name: string;
+    pic_email: string;
     pic_role: 'AUDIT_PIC' | 'SUPERVISOR';
     supervisor_id: string | null;
     supervisor_name: string | null;
+    supervisor_email: string | null;
+    reviewer_id: string;
+    reviewer_name: string;
+    reviewer_email: string;
     manager_id: string;
     manager_name: string;
     partner_id: string;

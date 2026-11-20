@@ -13,27 +13,59 @@ export interface EngagementAccess {
 }
 
 /**
- * Enforces the 21-user Department RBAC matrix:
- * - AUDIT_PIC: Only own assigned jobs; edit & submit in DRAFT; read-only afterward.
- * - SUPERVISOR (Dual-Role):
- *    1. If assigned as Job PIC -> full Audit PIC permissions.
- *    2. If supervising the Job PIC -> ZERO access before APPROVED_ACTIVE;
- *       unlocks Read-Only Viewer once APPROVED_ACTIVE.
- * - AUDIT_MANAGER: Views all submitted/active jobs (and drafts for visibility? Spec: views all submitted jobs PENDING_MANAGER + full read-only visibility across all engagements + 1st Extension).
- * - AUDIT_PARTNER: Views Manager-approved jobs PENDING_PARTNER + full read-only visibility + 2nd Extension + Fee Increase Letter.
+ * Enforces the Department RBAC matrix and "My Related Jobs" query rule:
+ * - Audit Manager & Audit Partner: See all engagements across the department.
+ * - Audit PICs & Supervisors: See ONLY engagements where:
+ *   1. logged_in_email == assigned_pic_email (all statuses: Draft, Pending, Approved)
+ *   2. OR status === "APPROVED_ACTIVE" AND (logged_in_email == team_supervisor_email OR logged_in_email == reviewer_email).
  */
 export function evaluateEngagementAccess(
   user: StaffMember,
   engagement: AuditEngagement
 ): EngagementAccess {
-  const isOwnerPic = engagement.team_assignment.pic_id === user.id;
-  const isAssignedSupervisor = engagement.team_assignment.supervisor_id === user.id;
+  const userEmail = user.email.toLowerCase();
+  const picEmail = engagement.team_assignment.pic_email?.toLowerCase() ?? '';
+  const supEmail = engagement.team_assignment.supervisor_email?.toLowerCase() ?? '';
+  const reviewerEmail = engagement.team_assignment.reviewer_email?.toLowerCase() ?? '';
+
+  const isOwnerPic = picEmail === userEmail || engagement.team_assignment.pic_id === user.id;
+  const isAssignedSupervisor = supEmail === userEmail;
+  const isAssignedReviewer = reviewerEmail === userEmail;
+  const isApproved = engagement.status === 'APPROVED_ACTIVE';
   const status = engagement.status;
 
-  if (user.role === 'AUDIT_PIC') {
-    if (!isOwnerPic) {
-      return denyAll();
-    }
+  if (user.role === 'AUDIT_MANAGER') {
+    const canReview = status === 'PENDING_MANAGER';
+    return {
+      canView: status !== 'DRAFT',
+      canEditDraft: false,
+      canSubmitToManager: false,
+      canManagerReview: canReview,
+      canPartnerReview: false,
+      canManageFirstExtension: isApproved,
+      canManageSecondExtension: false,
+      canViewFeeLetter: isApproved,
+      accessModeLabel: canReview ? '1st-Level Manager Review' : 'Manager Read-Only',
+    };
+  }
+
+  if (user.role === 'AUDIT_PARTNER') {
+    const canReview = status === 'PENDING_PARTNER';
+    return {
+      canView: status === 'PENDING_PARTNER' || isApproved,
+      canEditDraft: false,
+      canSubmitToManager: false,
+      canManagerReview: false,
+      canPartnerReview: canReview,
+      canManageFirstExtension: false,
+      canManageSecondExtension: isApproved,
+      canViewFeeLetter: isApproved,
+      accessModeLabel: canReview ? '2nd-Level Partner Pricing Desk' : 'Partner Read-Only',
+    };
+  }
+
+  // AUDIT_PIC or SUPERVISOR
+  if (isOwnerPic) {
     const isDraft = status === 'DRAFT';
     return {
       canView: true,
@@ -48,70 +80,22 @@ export function evaluateEngagementAccess(
     };
   }
 
-  if (user.role === 'SUPERVISOR') {
-    if (isOwnerPic) {
-      const isDraft = status === 'DRAFT';
-      return {
-        canView: true,
-        canEditDraft: isDraft,
-        canSubmitToManager: isDraft,
-        canManagerReview: false,
-        canPartnerReview: false,
-        canManageFirstExtension: false,
-        canManageSecondExtension: false,
-        canViewFeeLetter: false,
-        accessModeLabel: isDraft ? 'Supervisor-as-PIC Editor' : 'Supervisor-as-PIC Read-Only',
-      };
-    }
-
-    if (isAssignedSupervisor && status === 'APPROVED_ACTIVE') {
-      return {
-        canView: true,
-        canEditDraft: false,
-        canSubmitToManager: false,
-        canManagerReview: false,
-        canPartnerReview: false,
-        canManageFirstExtension: false,
-        canManageSecondExtension: false,
-        canViewFeeLetter: false,
-        accessModeLabel: 'Supervisor Read-Only Viewer',
-      };
-    }
-
-    // Zero visibility prior to 2-level approval when not assigned as Job PIC
-    return denyAll();
-  }
-
-  if (user.role === 'AUDIT_MANAGER') {
-    const canReview = status === 'PENDING_MANAGER';
-    const isApproved = status === 'APPROVED_ACTIVE';
+  // If assigned as Team Supervisor or Reviewer, only viewable when APPROVED_ACTIVE
+  if ((isAssignedSupervisor || isAssignedReviewer) && isApproved) {
     return {
-      canView: status !== 'DRAFT',
+      canView: true,
       canEditDraft: false,
       canSubmitToManager: false,
-      canManagerReview: canReview,
+      canManagerReview: false,
       canPartnerReview: false,
-      canManageFirstExtension: isApproved,
+      canManageFirstExtension: false,
       canManageSecondExtension: false,
-      canViewFeeLetter: isApproved,
-      accessModeLabel: canReview ? '1st-Level Manager Review' : 'Manager Read-Only',
+      canViewFeeLetter: true,
+      accessModeLabel: isAssignedSupervisor ? 'Supervisor Read-Only Viewer' : 'Reviewer Read-Only Viewer',
     };
   }
 
-  // AUDIT_PARTNER
-  const canReview = status === 'PENDING_PARTNER';
-  const isApproved = status === 'APPROVED_ACTIVE';
-  return {
-    canView: status === 'PENDING_PARTNER' || status === 'APPROVED_ACTIVE',
-    canEditDraft: false,
-    canSubmitToManager: false,
-    canManagerReview: false,
-    canPartnerReview: canReview,
-    canManageFirstExtension: false,
-    canManageSecondExtension: isApproved,
-    canViewFeeLetter: isApproved,
-    accessModeLabel: canReview ? '2nd-Level Partner Pricing Desk' : 'Partner Read-Only',
-  };
+  return denyAll();
 }
 
 export function canUserCreateEngagement(user: StaffMember): boolean {
@@ -125,19 +109,17 @@ export function getVisibleEngagements(
   return engagements.filter((eng) => evaluateEngagementAccess(user, eng).canView);
 }
 
-/**
- * Counts how many of a Supervisor's team jobs are currently hidden/locked pre-approval.
- * Used only to display an aggregate count notice without leaking any job data.
- */
 export function countLockedSupervisorJobs(
   user: StaffMember,
   engagements: AuditEngagement[]
 ): number {
   if (user.role !== 'SUPERVISOR') return 0;
+  const userEmail = user.email.toLowerCase();
   return engagements.filter(
     (eng) =>
-      eng.team_assignment.supervisor_id === user.id &&
-      eng.team_assignment.pic_id !== user.id &&
+      (eng.team_assignment.supervisor_email?.toLowerCase() === userEmail ||
+        eng.team_assignment.reviewer_email?.toLowerCase() === userEmail) &&
+      eng.team_assignment.pic_email?.toLowerCase() !== userEmail &&
       eng.status !== 'APPROVED_ACTIVE'
   ).length;
 }

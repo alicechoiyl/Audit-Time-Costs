@@ -10,19 +10,20 @@ export const DEFAULT_CLEARANCE_HOURS = 7.0;
 export const HOURS_PER_WORKING_DAY = 7.0;
 
 /**
- * MIA RPG 7 (Revised) — Gross Revenue & Total Operating Expenses Progressive Scale
- * First RM 100,000: RM 1,500
- * Next RM 150,000 (100k - 250k): 0.550%
- * Next RM 250,000 (250k - 500k): 0.360%
- * Next RM 500,000 (500k - 1.0M): 0.260%
- * Next RM 1,500,000 (1.0M - 2.5M): 0.175%
- * Next RM 2,500,000 (2.5M - 5.0M): 0.130%
- * Next RM 5,000,000 (5.0M - 10.0M): 0.095% (Cumulative at RM 10M = RM 12,455)
- * Above RM 10,000,000: Negotiable with mandatory minimum floor of RM 20,000
+ * MIA RPG 7 (Revised) — Gross Revenue & Total Assets (Excl. Intangibles) Progressive Scale
+ * Reconciled exactly to Excel guideline:
+ * - First RM 100,000 @ 1.000% (RM 1,000.00)
+ * - Next RM 150,000 (100k - 250k) @ 0.438% (RM 657.00)
+ * - Next RM 250,000 (250k - 500k) @ 0.313% (RM 782.50)
+ * - Next RM 500,000 (500k - 1.0M) @ 0.188% (RM 940.00)
+ * - Next RM 1,500,000 (1.0M - 2.5M) @ 0.125% (RM 1,875.00)
+ * - Next RM 2,500,000 (2.5M - 5.0M) @ 0.100% (RM 2,500.00)
+ * - Next RM 5,000,000 (5.0M - 10.0M) @ 0.094% (RM 4,700.00; Cumulative RM 12,454.50)
+ * - Above RM 10,000,000: Negotiable (Minimum RM 20,000 per assignment)
  */
-export function calculateRevenueOrOpExRpg7(
+export function calculateRevenueOrAssetsRpg7(
   amount: number,
-  basis: 'Gross Revenue' | 'Total Operating Expenses'
+  basis: 'Gross Revenue' | 'Total Assets (Excl. Intangibles)'
 ): Rpg7ScaleResult {
   const safeAmount = Math.max(0, Number.isFinite(amount) ? amount : 0);
   const floorThreshold = 10_000_000;
@@ -45,44 +46,29 @@ export function calculateRevenueOrOpExRpg7(
     };
   }
 
-  const tiers: { label: string; cap: number; rate: number | null; fixedFee?: number }[] = [
-    { label: 'First RM 100,000', cap: 100_000, rate: null, fixedFee: 1_500 },
-    { label: 'RM 100,001 – RM 250,000', cap: 150_000, rate: 0.0055 },
-    { label: 'RM 250,001 – RM 500,000', cap: 250_000, rate: 0.0036 },
-    { label: 'RM 500,001 – RM 1,000,000', cap: 500_000, rate: 0.0026 },
-    { label: 'RM 1,000,001 – RM 2,500,000', cap: 1_500_000, rate: 0.00175 },
-    { label: 'RM 2,500,001 – RM 5,000,000', cap: 2_500_000, rate: 0.0013 },
-    { label: 'RM 5,000,001 – RM 10,000,000', cap: 5_000_000, rate: 0.00095 },
+  const tiers: { label: string; cap: number; rate: number }[] = [
+    { label: 'First RM 100,000', cap: 100_000, rate: 0.01 },
+    { label: 'RM 100,001 – RM 250,000', cap: 150_000, rate: 0.00438 },
+    { label: 'RM 250,001 – RM 500,000', cap: 250_000, rate: 0.00313 },
+    { label: 'RM 500,001 – RM 1,000,000', cap: 500_000, rate: 0.00188 },
+    { label: 'RM 1,000,001 – RM 2,500,000', cap: 1_500_000, rate: 0.00125 },
+    { label: 'RM 2,500,001 – RM 5,000,000', cap: 2_500_000, rate: 0.0010 },
+    { label: 'RM 5,000,001 – RM 10,000,000', cap: 5_000_000, rate: 0.00094 },
   ];
 
   let remaining = safeAmount;
   let totalFee = 0;
   const breakdown: Rpg7TierBreakdown[] = [];
 
-  for (let i = 0; i < tiers.length; i++) {
-    const tier = tiers[i];
-    if (i === 0) {
-      const used = Math.min(remaining, tier.cap);
-      const fee = safeAmount > 0 ? tier.fixedFee ?? 1_500 : 0;
-      totalFee += fee;
-      breakdown.push({
-        band: tier.label,
-        amountInBand: used,
-        rateLabel: 'Base RM 1,500',
-        fee,
-      });
-      remaining = Math.max(0, remaining - tier.cap);
-      continue;
-    }
-
+  for (const tier of tiers) {
     if (remaining <= 0) break;
     const used = Math.min(remaining, tier.cap);
-    const fee = used * (tier.rate ?? 0);
+    const fee = used * tier.rate;
     totalFee += fee;
     breakdown.push({
       band: tier.label,
       amountInBand: used,
-      rateLabel: `${((tier.rate ?? 0) * 100).toFixed(3)}%`,
+      rateLabel: `${(tier.rate * 100).toFixed(3)}%`,
       fee: Math.round(fee * 100) / 100,
     });
     remaining = Math.max(0, remaining - tier.cap);
@@ -99,87 +85,49 @@ export function calculateRevenueOrOpExRpg7(
 }
 
 /**
- * MIA RPG 7 (Revised) — Total Assets (Excluding Intangibles) Progressive Scale
- * First RM 150,000: RM 1,500
- * Next RM 225,000 (150k - 375k): 0.365%
- * Next RM 375,000 (375k - 750k): 0.240%
- * Next RM 750,000 (750k - 1.5M): 0.175%
- * Next RM 2,250,000 (1.5M - 3.75M): 0.115%
- * Next RM 3,750,000 (3.75M - 7.5M): 0.085%
- * Next RM 7,500,000 (7.5M - 15.0M): 0.065%
- * Above RM 15,000,000: Negotiable (min RM 20,000)
+ * MIA RPG 7 (Revised) — Total Operating Expenses Progressive Scale
+ * Reconciled exactly to Excel guideline:
+ * - First RM 50,000 @ 2.500% (RM 1,250.00)
+ * - Next RM 150,000 (50k - 200k) @ 1.250% (RM 1,875.00)
+ * - Next RM 800,000 (200k - 1.0M) @ 0.625% (RM 5,000.00)
+ * - Next RM 1,000,000 (1.0M - 2.0M) @ 0.250% (RM 2,500.00)
+ * - Above RM 2,000,000 @ 0.125%
  */
-export function calculateAssetsRpg7(amount: number): Rpg7ScaleResult {
+export function calculateOpExRpg7(amount: number): Rpg7ScaleResult {
   const safeAmount = Math.max(0, Number.isFinite(amount) ? amount : 0);
-  const floorThreshold = 15_000_000;
 
-  if (safeAmount > floorThreshold) {
-    return {
-      basis: 'Total Assets (Excl. Intangibles)',
-      inputAmount: safeAmount,
-      recommendedFee: 20_000,
-      isNegotiableFloor: true,
-      floorThreshold,
-      breakdown: [
-        {
-          band: 'Above RM 15,000,000 (Negotiable Floor)',
-          amountInBand: safeAmount,
-          rateLabel: 'Min Floor',
-          fee: 20_000,
-        },
-      ],
-    };
-  }
-
-  const tiers: { label: string; cap: number; rate: number | null; fixedFee?: number }[] = [
-    { label: 'First RM 150,000', cap: 150_000, rate: null, fixedFee: 1_500 },
-    { label: 'RM 150,001 – RM 375,000', cap: 225_000, rate: 0.00365 },
-    { label: 'RM 375,001 – RM 750,000', cap: 375_000, rate: 0.0024 },
-    { label: 'RM 750,001 – RM 1,500,000', cap: 750_000, rate: 0.00175 },
-    { label: 'RM 1,500,001 – RM 3,750,000', cap: 2_250_000, rate: 0.00115 },
-    { label: 'RM 3,750,001 – RM 7,500,000', cap: 3_750_000, rate: 0.00085 },
-    { label: 'RM 7,500,001 – RM 15,000,000', cap: 7_500_000, rate: 0.00065 },
+  const tiers: { label: string; cap: number; rate: number }[] = [
+    { label: 'First RM 50,000', cap: 50_000, rate: 0.025 },
+    { label: 'RM 50,001 – RM 200,000', cap: 150_000, rate: 0.0125 },
+    { label: 'RM 200,001 – RM 1,000,000', cap: 800_000, rate: 0.00625 },
+    { label: 'RM 1,000,001 – RM 2,000,000', cap: 1_000_000, rate: 0.0025 },
+    { label: 'Above RM 2,000,000', cap: Infinity, rate: 0.00125 },
   ];
 
   let remaining = safeAmount;
   let totalFee = 0;
   const breakdown: Rpg7TierBreakdown[] = [];
 
-  for (let i = 0; i < tiers.length; i++) {
-    const tier = tiers[i];
-    if (i === 0) {
-      const used = Math.min(remaining, tier.cap);
-      const fee = safeAmount > 0 ? tier.fixedFee ?? 1_500 : 0;
-      totalFee += fee;
-      breakdown.push({
-        band: tier.label,
-        amountInBand: used,
-        rateLabel: 'Base RM 1,500',
-        fee,
-      });
-      remaining = Math.max(0, remaining - tier.cap);
-      continue;
-    }
-
+  for (const tier of tiers) {
     if (remaining <= 0) break;
     const used = Math.min(remaining, tier.cap);
-    const fee = used * (tier.rate ?? 0);
+    const fee = used * tier.rate;
     totalFee += fee;
     breakdown.push({
       band: tier.label,
       amountInBand: used,
-      rateLabel: `${((tier.rate ?? 0) * 100).toFixed(3)}%`,
+      rateLabel: `${(tier.rate * 100).toFixed(3)}%`,
       fee: Math.round(fee * 100) / 100,
     });
     remaining = Math.max(0, remaining - tier.cap);
   }
 
   return {
-    basis: 'Total Assets (Excl. Intangibles)',
+    basis: 'Total Operating Expenses',
     inputAmount: safeAmount,
     recommendedFee: Math.round(totalFee),
     isNegotiableFloor: false,
-    floorThreshold,
+    floorThreshold: 2_000_000,
     breakdown,
   };
 }
@@ -190,9 +138,9 @@ export function calculateRpg7Summary(
   expensesAmount: number,
   pyAuditFee: number
 ): Rpg7Summary {
-  const revenue = calculateRevenueOrOpExRpg7(revenueAmount, 'Gross Revenue');
-  const expenses = calculateRevenueOrOpExRpg7(expensesAmount, 'Total Operating Expenses');
-  const assets = calculateAssetsRpg7(assetsAmount);
+  const revenue = calculateRevenueOrAssetsRpg7(revenueAmount, 'Gross Revenue');
+  const assets = calculateRevenueOrAssetsRpg7(assetsAmount, 'Total Assets (Excl. Intangibles)');
+  const expenses = calculateOpExRpg7(expensesAmount);
 
   const scales = [revenue, assets, expenses];
   const highestBenchmark = scales.reduce((best, curr) =>
@@ -216,17 +164,22 @@ export function calculateRpg7Summary(
 }
 
 /**
- * Allowed Hours Formula: (PY Audit Fee * 70%) / Charge-Out Rate (RM 45/hr)
- * Rounded to 1 decimal place.
+ * Allowed Hours Formula: (Fee Pool * 70%) / Charge-Out Rate (RM 45/hr)
  */
 export function calculateAllowedHours(
   pyAuditFee: number,
+  pyTaxFee = 0,
+  includeTaxInPool = false,
   chargeOutRate = DEFAULT_CHARGE_OUT_RATE
 ): number {
-  if (!Number.isFinite(pyAuditFee) || pyAuditFee <= 0 || chargeOutRate <= 0) {
+  const baseAudit = Math.max(0, Number.isFinite(pyAuditFee) ? pyAuditFee : 0);
+  const tax = includeTaxInPool ? Math.max(0, Number.isFinite(pyTaxFee) ? pyTaxFee : 0) : 0;
+  const pool = baseAudit + tax;
+
+  if (pool <= 0 || chargeOutRate <= 0) {
     return 0;
   }
-  const raw = (pyAuditFee * 0.7) / chargeOutRate;
+  const raw = (pool * 0.7) / chargeOutRate;
   return Math.round(raw * 10) / 10;
 }
 
